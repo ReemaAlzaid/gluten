@@ -286,6 +286,7 @@ class Spark40Shims extends SparkShims {
 
   def isRowIndexMetadataColumn(name: String): Boolean =
     name == ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME ||
+      name.equalsIgnoreCase("_pos") ||
       name.equalsIgnoreCase("__delta_internal_is_row_deleted")
 
   def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int = {
@@ -300,7 +301,18 @@ class Spark40Shims extends SparkShims {
               "must be of LongType or IntegerType")
         }
         idx
-      case _ => -1
+      case _ =>
+        sparkSchema.fields.zipWithIndex.find {
+          case (field: StructField, _: Int) =>
+            field.name.equalsIgnoreCase("_pos")
+        } match {
+          case Some((field: StructField, idx: Int)) =>
+            if (field.dataType != LongType && field.dataType != IntegerType) {
+              throw new RuntimeException("_pos must be of LongType or IntegerType")
+            }
+            idx
+          case _ => -1
+        }
     }
   }
 

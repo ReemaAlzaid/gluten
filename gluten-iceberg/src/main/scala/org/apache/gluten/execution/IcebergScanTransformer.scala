@@ -97,9 +97,9 @@ case class IcebergScanTransformer(
       if (notSupport) {
         return ValidationResult.failed("Contains not supported data type or metadata column")
       }
-      // Allow input_file_name() and related metadata functions
+      // Allow Spark's input_file_* functions plus Iceberg copy-on-write metadata columns.
       val allowedMetadataColumns =
-        IcebergScanTransformer.InputFileRelatedMetadataColumnNames
+        IcebergScanTransformer.SupportedMetadataColumnNames
       val hasUnsupportedMetadata = scan.readSchema().fieldNames.exists {
         f =>
           MetadataColumns.isMetadataColumn(f) &&
@@ -188,11 +188,17 @@ case class IcebergScanTransformer(
       !readSchemaFields.contains(name)
   }
 
+  private lazy val nonRowIndexMetadataColumns = metadataColumns.filterNot {
+    attr =>
+      IcebergScanTransformer.RowIndexMetadataColumnNames.contains(
+        attr.name.toLowerCase(Locale.ROOT))
+  }
+
   override def getMetadataColumns(): Seq[AttributeReference] = {
     val extraMetadataColumns = inputFileRelatedMetadataColumns.filterNot {
-      metadataAttr => metadataColumns.exists(_.name.equalsIgnoreCase(metadataAttr.name))
+      metadataAttr => nonRowIndexMetadataColumns.exists(_.name.equalsIgnoreCase(metadataAttr.name))
     }
-    metadataColumns ++ extraMetadataColumns
+    nonRowIndexMetadataColumns ++ extraMetadataColumns
   }
 
   override lazy val fileFormat: ReadFileFormat = GlutenIcebergSourceUtil.getFileFormat(scan)
@@ -271,19 +277,26 @@ case class IcebergScanTransformer(
       case (iceberg: Types.StructType, currentType: Types.StructType, sparkStruct: StructType) =>
         sparkStruct.forall {
           sparkField =>
-            val currentField = new Schema(currentType.fields()).findField(sparkField.name)
-            // Find not exists column
-            if (currentField == null) {
-              false
+            if (
+              IcebergScanTransformer.SupportedMetadataColumnNames.contains(
+                sparkField.name.toLowerCase(Locale.ROOT))
+            ) {
+              true
             } else {
-              val field = new Schema(iceberg.fields()).findField(currentField.fieldId())
-              // The field does not exist in old schema, add column case
-              if (field == null) {
-                true
+              val currentField = new Schema(currentType.fields()).findField(sparkField.name)
+              // Find not exists column
+              if (currentField == null) {
+                false
               } else {
-                // Maybe rename column
-                field.name() == sparkField.name &&
-                typesMatch(field.`type`(), currentField.`type`(), sparkField.dataType)
+                val field = new Schema(iceberg.fields()).findField(currentField.fieldId())
+                // The field does not exist in old schema, add column case
+                if (field == null) {
+                  true
+                } else {
+                  // Maybe rename column
+                  field.name() == sparkField.name &&
+                  typesMatch(field.`type`(), currentField.`type`(), sparkField.dataType)
+                }
               }
             }
         }
@@ -313,6 +326,14 @@ object IcebergScanTransformer {
   private val InputFileRelatedMetadataColumnNames =
     Set("input_file_name", "input_file_block_start", "input_file_block_length")
 
+  private val RowIndexMetadataColumnNames =
+    Set(MetadataColumns.ROW_POSITION.name().toLowerCase(Locale.ROOT))
+
+  private val SupportedMetadataColumnNames =
+    InputFileRelatedMetadataColumnNames ++
+      Set(MetadataColumns.FILE_PATH.name().toLowerCase(Locale.ROOT)) ++
+      RowIndexMetadataColumnNames
+
   def apply(batchScan: BatchScanExec): IcebergScanTransformer = {
     new IcebergScanTransformer(
       batchScan.output.map(a => a.withName(AvroSchemaUtil.makeCompatibleName(a.name))),
@@ -325,8 +346,8 @@ object IcebergScanTransformer {
   }
 
   def supportsBatchScan(scan: Scan): Boolean = {
-    scan.getClass == GlutenIcebergSourceUtil.getClassOfSparkBatchQueryScan &&
-    !GlutenIcebergSourceUtil.isMetadataScan(scan)
+    GlutenIcebergSourceUtil.supportsBatchScan(scan) &&
+      !GlutenIcebergSourceUtil.isMetadataScan(scan)
   }
 
   private def containsUuidOrFixedType(dataType: Type): Boolean = {

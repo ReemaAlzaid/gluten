@@ -30,7 +30,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.iceberg._
 import org.apache.iceberg.spark.SparkSchemaUtil
 
-import java.lang.{Class, Long => JLong}
+import java.lang.{Long => JLong}
 import java.util.{ArrayList => JArrayList, HashMap => JHashMap, List => JList, Map => JMap}
 import java.util.Locale
 
@@ -40,13 +40,18 @@ object GlutenIcebergSourceUtil {
   private val InputFileNameCol = "input_file_name"
   private val InputFileBlockStartCol = "input_file_block_start"
   private val InputFileBlockLengthCol = "input_file_block_length"
+  private val IcebergFilePathCol = MetadataColumns.FILE_PATH.name()
 
-  def getClassOfSparkBatchQueryScan(): Class[SparkBatchQueryScan] = {
-    classOf[SparkBatchQueryScan]
+  def supportsBatchScan(scan: Scan): Boolean = {
+    scan.isInstanceOf[SparkPartitioningAwareScan[_]]
+  }
+
+  private def getScanTasks(scan: SparkPartitioningAwareScan[_]): List[ScanTask] = {
+    scan.tasks().asScala.toList.asInstanceOf[List[ScanTask]]
   }
 
   def isMetadataScan(sparkScan: Scan): Boolean = sparkScan match {
-    case scan: SparkBatchQueryScan => scan.table().isInstanceOf[BaseMetadataTable]
+    case scan: SparkPartitioningAwareScan[_] => scan.table().isInstanceOf[BaseMetadataTable]
     case _ => false
   }
 
@@ -124,6 +129,8 @@ object GlutenIcebergSourceUtil {
           case InputFileNameCol => metadataColumns.put(name, filePath)
           case InputFileBlockStartCol => metadataColumns.put(name, start.toString)
           case InputFileBlockLengthCol => metadataColumns.put(name, length.toString)
+          case icebergName if icebergName == IcebergFilePathCol.toLowerCase(Locale.ROOT) =>
+            metadataColumns.put(name, filePath)
           case _ =>
         }
     }
@@ -131,9 +138,8 @@ object GlutenIcebergSourceUtil {
   }
 
   def getFileFormat(sparkScan: Scan): ReadFileFormat = sparkScan match {
-    case scan: SparkBatchQueryScan =>
-      val tasks = scan.tasks().asScala
-      asFileScanTask(tasks.toList).foreach {
+    case scan: SparkPartitioningAwareScan[_] =>
+      asFileScanTask(getScanTasks(scan)).foreach {
         task =>
           task.file().format() match {
             case FileFormat.PARQUET => return ReadFileFormat.ParquetReadFormat
@@ -141,15 +147,14 @@ object GlutenIcebergSourceUtil {
             case _ =>
           }
       }
-      throw new GlutenNotSupportException("Iceberg Only support parquet and orc file format.")
+      throw new GlutenNotSupportException("Iceberg only supports parquet and orc file format.")
     case _ =>
-      throw new GlutenNotSupportException("Only support iceberg SparkBatchQueryScan.")
+      throw new GlutenNotSupportException("Only support iceberg SparkPartitioningAwareScan.")
   }
 
   def getReadPartitionSchema(sparkScan: Scan): StructType = sparkScan match {
-    case scan: SparkBatchQueryScan =>
-      val tasks = scan.tasks().asScala
-      asFileScanTask(tasks.toList).foreach {
+    case scan: SparkPartitioningAwareScan[_] =>
+      asFileScanTask(getScanTasks(scan)).foreach {
         task =>
           val spec = task.spec()
           if (spec.isPartitioned) {
@@ -186,9 +191,9 @@ object GlutenIcebergSourceUtil {
           }
       }
       throw new UnsupportedOperationException(
-        "Failed to get partition schema from iceberg SparkBatchQueryScan.")
+        "Failed to get partition schema from iceberg SparkPartitioningAwareScan.")
     case _ =>
-      throw new UnsupportedOperationException("Only support iceberg SparkBatchQueryScan.")
+      throw new UnsupportedOperationException("Only support iceberg SparkPartitioningAwareScan.")
   }
 
   private def asFileScanTask(tasks: List[ScanTask]): List[FileScanTask] = {

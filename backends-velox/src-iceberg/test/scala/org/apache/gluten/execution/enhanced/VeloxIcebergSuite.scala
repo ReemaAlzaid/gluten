@@ -498,7 +498,7 @@ class VeloxIcebergSuite extends IcebergSuite {
         Seq(
           Row(1, "Name4", 23, new java.math.BigDecimal("3400.00")),
           Row(2, "Name2", 30, new java.math.BigDecimal("5500.00")),
-          Row(3, "Name1", 35, new java.math.BigDecimal("6500.00"))
+          Row(3, "Name3", 35, new java.math.BigDecimal("6500.00"))
         )
       )
     }
