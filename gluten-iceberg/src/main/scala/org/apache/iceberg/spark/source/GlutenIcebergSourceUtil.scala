@@ -17,6 +17,7 @@
 package org.apache.iceberg.spark.source
 
 import org.apache.gluten.backendsapi.BackendsApiManager
+import org.apache.gluten.ContentFileUtil
 import org.apache.gluten.exception.GlutenNotSupportException
 import org.apache.gluten.execution.SparkDataSourceRDDPartition
 import org.apache.gluten.substrait.rel.{IcebergLocalFilesBuilder, SplitInfo}
@@ -81,7 +82,7 @@ object GlutenIcebergSourceUtil {
         val tasks = partition.taskGroup[ScanTask]().tasks().asScala
         asFileScanTask(tasks.toList).foreach {
           task =>
-            val filePath = task.file().path().toString
+            val filePath = ContentFileUtil.getFilePath(task.file())
             paths.add(BackendsApiManager.getTransformerApiInstance.encodeFilePathIfNeed(filePath))
             starts.add(task.start())
             lengths.add(task.length())

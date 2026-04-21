@@ -188,7 +188,15 @@ case class IcebergScanTransformer(
       !readSchemaFields.contains(name)
   }
 
-  private lazy val nonRowIndexMetadataColumns = metadataColumns.filterNot {
+  private lazy val requestedMetadataColumns =
+    (metadataColumns ++ output.filter {
+      attr =>
+        val name = attr.name.toLowerCase(Locale.ROOT)
+        IcebergScanTransformer.SupportedMetadataColumnNames.contains(name) &&
+        MetadataColumns.isMetadataColumn(attr.name)
+    }).distinctBy(_.exprId)
+
+  private lazy val nonRowIndexMetadataColumns = requestedMetadataColumns.filterNot {
     attr =>
       IcebergScanTransformer.RowIndexMetadataColumnNames.contains(
         attr.name.toLowerCase(Locale.ROOT))

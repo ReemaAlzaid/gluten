@@ -17,6 +17,7 @@
 package org.apache.gluten.substrait.rel;
 
 import io.substrait.proto.ReadRel;
+import org.apache.gluten.ContentFileUtil;
 import org.apache.iceberg.DeleteFile;
 
 import java.util.ArrayList;
@@ -93,7 +94,7 @@ public class IcebergLocalFilesNode extends LocalFilesNode {
               "Unsupported FileCount " + delete.content().name() + " for delete file.");
       }
       deleteFileBuilder.setFileContent(fileContent);
-      deleteFileBuilder.setFilePath(delete.path().toString());
+      deleteFileBuilder.setFilePath(ContentFileUtil.getFilePath(delete));
       deleteFileBuilder.setFileSize(delete.fileSizeInBytes());
       deleteFileBuilder.setRecordCount(delete.recordCount());
       switch (delete.format()) {

@@ -29,6 +29,7 @@ abstract class IcebergSuite extends WholeStageTransformerSuite {
   override protected def sparkConf: SparkConf = {
     super.sparkConf
       .set("spark.shuffle.manager", "org.apache.spark.shuffle.sort.ColumnarShuffleManager")
+      .set("spark.sql.ansi.enabled", "false")
       .set("spark.sql.files.maxPartitionBytes", "1g")
       .set("spark.sql.shuffle.partitions", "1")
       .set("spark.memory.offHeap.size", "2g")
@@ -79,6 +80,34 @@ abstract class IcebergSuite extends WholeStageTransformerSuite {
       assert(
         rows.forall(row => !row.isNullAt(1) && row.getString(1).nonEmpty),
         s"Expected non-empty input_file_name values, got: ${rows.mkString(", ")}")
+    }
+  }
+
+  test("iceberg metadata columns") {
+    withTable("iceberg_metadata_tb") {
+      spark.sql("""
+                  |CREATE TABLE iceberg_metadata_tb (id INT, data STRING)
+                  |USING iceberg
+                  |""".stripMargin)
+      spark.sql("""
+                  |INSERT INTO iceberg_metadata_tb VALUES
+                  |(1, 'a'), (2, 'b'), (3, 'c')
+                  |""".stripMargin)
+
+      val df = runAndCompare("""
+                               |SELECT id, _file, _pos
+                               |FROM iceberg_metadata_tb
+                               |ORDER BY id
+                               |""".stripMargin)
+
+      val rows = df.collect()
+      checkGlutenPlan[IcebergScanTransformer](df)
+      assert(
+        rows.forall(row => !row.isNullAt(1) && row.getString(1).nonEmpty),
+        s"Expected non-empty _file values, got: ${rows.mkString(", ")}")
+      assert(
+        rows.forall(row => !row.isNullAt(2) && row.getLong(2) >= 0L),
+        s"Expected non-null non-negative _pos values, got: ${rows.mkString(", ")}")
     }
   }
 
