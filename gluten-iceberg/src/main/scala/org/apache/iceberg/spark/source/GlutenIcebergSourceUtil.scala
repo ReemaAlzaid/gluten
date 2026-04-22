@@ -45,6 +45,11 @@ object GlutenIcebergSourceUtil {
     classOf[SparkBatchQueryScan]
   }
 
+  def isMetadataScan(sparkScan: Scan): Boolean = sparkScan match {
+    case scan: SparkBatchQueryScan => scan.table().isInstanceOf[BaseMetadataTable]
+    case _ => false
+  }
+
   def deleteExists(p: SparkDataSourceRDDPartition): Boolean = {
     p.inputPartitions.exists {
       case ip: SparkInputPartition =>

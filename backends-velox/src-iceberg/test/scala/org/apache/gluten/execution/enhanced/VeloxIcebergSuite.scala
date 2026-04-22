@@ -149,6 +149,44 @@ class VeloxIcebergSuite extends IcebergSuite {
     }
   }
 
+  test("iceberg delete fallback summary after command commit") {
+    withTable("iceberg_cow_summary_tb") {
+      spark.sql("""
+                  |create table iceberg_cow_summary_tb (
+                  |  id int,
+                  |  name string,
+                  |  p string
+                  |) using iceberg
+                  |tblproperties (
+                  |  'format-version' = '2',
+                  |  'write.delete.mode' = 'copy-on-write',
+                  |  'write.update.mode' = 'copy-on-write',
+                  |  'write.merge.mode' = 'copy-on-write'
+                  |);
+                  |""".stripMargin)
+
+      spark.sql("""
+                  |insert into table iceberg_cow_summary_tb
+                  |values (1, 'a1', 'p1'), (2, 'a2', 'p1'), (3, 'a3', 'p2');
+                  |""".stripMargin)
+
+      val df = spark.sql("""
+                           |delete from iceberg_cow_summary_tb where name = 'a1';
+                           |""".stripMargin)
+
+      checkAnswer(
+        spark.sql("""
+                    |select * from iceberg_cow_summary_tb order by id
+                    |""".stripMargin),
+        Seq(Row(2, "a2", "p1"), Row(3, "a3", "p2"))
+      )
+
+      // Regression test for fallback summary collection after Iceberg commit cleanup.
+      val summary = df.fallbackSummary()
+      assert(summary.physicalPlanDescription.nonEmpty)
+    }
+  }
+
   test("iceberg insert partition table bucket transform") {
     withTable("iceberg_tb2") {
       spark.sql("""
