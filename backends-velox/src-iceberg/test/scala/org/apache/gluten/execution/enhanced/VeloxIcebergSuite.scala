@@ -528,11 +528,17 @@ class VeloxIcebergSuite extends IcebergSuite {
                     |  (3, 'Name3', 35)
                     |""".stripMargin)
 
-        spark.sql("""
-                    |update iceberg_cow_update_ansi_tb
-                    |set name = 'Name4'
-                    |where id = 1
-                    |""".stripMargin)
+        val df = spark.sql("""
+                             |update iceberg_cow_update_ansi_tb
+                             |set name = 'Name4'
+                             |where id = 1
+                             |""".stripMargin)
+
+        assert(
+          !df.queryExecution.executedPlan
+            .asInstanceOf[CommandResultExec]
+            .commandPhysicalPlan
+            .isInstanceOf[VeloxIcebergReplaceDataExec])
 
         checkAnswer(
           spark.sql("""

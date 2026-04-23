@@ -38,9 +38,14 @@ case class OffloadIcebergAppend() extends OffloadSingleNode {
 
 case class OffloadIcebergReplaceData() extends OffloadSingleNode {
   override def offload(plan: SparkPlan): SparkPlan = plan match {
-    case r: ReplaceDataExec if supportsWrite(r.write) =>
+    case r: ReplaceDataExec if supportsWrite(r.write) && !ansiFallbackEnabled =>
       VeloxIcebergReplaceDataExec(r)
     case other => other
+  }
+
+  private def ansiFallbackEnabled: Boolean = {
+    val glutenConf = GlutenConfig.get
+    glutenConf.enableAnsiMode && glutenConf.enableAnsiFallback
   }
 }
 
