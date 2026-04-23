@@ -16,8 +16,8 @@
  */
 package org.apache.iceberg.spark.source
 
-import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.ContentFileUtil
+import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.exception.GlutenNotSupportException
 import org.apache.gluten.execution.SparkDataSourceRDDPartition
 import org.apache.gluten.substrait.rel.{IcebergLocalFilesBuilder, SplitInfo}

@@ -355,7 +355,7 @@ object IcebergScanTransformer {
 
   def supportsBatchScan(scan: Scan): Boolean = {
     GlutenIcebergSourceUtil.supportsBatchScan(scan) &&
-      !GlutenIcebergSourceUtil.isMetadataScan(scan)
+    !GlutenIcebergSourceUtil.isMetadataScan(scan)
   }
 
   private def containsUuidOrFixedType(dataType: Type): Boolean = {

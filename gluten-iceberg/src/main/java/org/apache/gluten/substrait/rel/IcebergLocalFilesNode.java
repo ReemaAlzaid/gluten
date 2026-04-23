@@ -16,8 +16,9 @@
  */
 package org.apache.gluten.substrait.rel;
 
-import io.substrait.proto.ReadRel;
 import org.apache.gluten.ContentFileUtil;
+
+import io.substrait.proto.ReadRel;
 import org.apache.iceberg.DeleteFile;
 
 import java.util.ArrayList;
