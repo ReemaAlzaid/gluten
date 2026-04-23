@@ -25,6 +25,8 @@
 #include "velox/connectors/hive/iceberg/IcebergDataSink.h"
 #include "velox/connectors/hive/iceberg/IcebergDeleteFile.h"
 
+#include <unordered_map>
+
 using namespace facebook::velox;
 using namespace facebook::velox::connector::hive;
 using namespace facebook::velox::connector::hive::iceberg;
@@ -236,12 +238,42 @@ void IcebergWriter::write(const VeloxColumnarBatch& batch) {
   auto inputRowVector = batch.getRowVector();
   auto inputRowType = asRowType(inputRowVector->type());
 
-  if (inputRowType->size() != rowType_->size()) {
-    const auto& children = inputRowVector->children();
-    std::vector<VectorPtr> dataColumns(children.begin() + 1, children.begin() + 1 + rowType_->size());
+  auto schemasMatch = inputRowType->size() == rowType_->size();
+  if (schemasMatch) {
+    for (size_t i = 0; i < rowType_->size(); ++i) {
+      if (inputRowType->nameOf(i) != rowType_->nameOf(i)) {
+        schemasMatch = false;
+        break;
+      }
+    }
+  }
+
+  if (!schemasMatch) {
+    std::vector<VectorPtr> filteredChildren;
+    filteredChildren.reserve(rowType_->size());
+
+    std::unordered_map<std::string, size_t> inputColumnIndices;
+    inputColumnIndices.reserve(inputRowType->size());
+    for (size_t i = 0; i < inputRowType->size(); ++i) {
+      inputColumnIndices.emplace(inputRowType->nameOf(i), i);
+    }
+
+    for (size_t i = 0; i < rowType_->size(); ++i) {
+      const auto& columnName = rowType_->nameOf(i);
+      const auto it = inputColumnIndices.find(columnName);
+      VELOX_CHECK(
+          it != inputColumnIndices.end(),
+          "Column '{}' not found in input batch for Iceberg write",
+          columnName);
+      filteredChildren.push_back(inputRowVector->childAt(it->second));
+    }
 
     auto filteredRowVector = std::make_shared<RowVector>(
-        pool_.get(), rowType_, inputRowVector->nulls(), inputRowVector->size(), std::move(dataColumns));
+        pool_.get(),
+        rowType_,
+        inputRowVector->nulls(),
+        inputRowVector->size(),
+        std::move(filteredChildren));
 
     dataSink_->appendData(filteredRowVector);
   } else {
