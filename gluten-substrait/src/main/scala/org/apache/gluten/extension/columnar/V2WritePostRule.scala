@@ -16,6 +16,7 @@
  */
 package org.apache.gluten.extension.columnar
 
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution.ColumnarV2TableWriteExec
 
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -31,10 +32,20 @@ case class V2WritePostRule() extends Rule[SparkPlan] {
        * guarantee to generate columnar outputs. thus avoiding the case of c2r->aqe->r2c->writer.
        */
       write.query match {
-        case aqe: AdaptiveSparkPlanExec if !aqe.supportsColumnar =>
+        case aqe: AdaptiveSparkPlanExec if !aqe.supportsColumnar && canForceColumnarAqe(write) =>
           write.withNewQuery(aqe.copy(supportsColumnar = true))
         case _ => write
       }
     case other => other
+  }
+
+  private def canForceColumnarAqe(write: ColumnarV2TableWriteExec): Boolean = {
+    val glutenConf = GlutenConfig.get
+    val ansiFallbackEnabled = glutenConf.enableAnsiMode && glutenConf.enableAnsiFallback
+    !ansiFallbackEnabled && !hasFallbackTag(write.query)
+  }
+
+  private def hasFallbackTag(plan: SparkPlan): Boolean = {
+    plan.exists { case p: SparkPlan => FallbackTags.nonEmpty(p) }
   }
 }

@@ -503,4 +503,46 @@ class VeloxIcebergSuite extends IcebergSuite {
       )
     }
   }
+
+  test("iceberg read cow table - update with ansi fallback") {
+    withSQLConf("spark.sql.ansi.enabled" -> "true") {
+      withTable("iceberg_cow_update_ansi_tb") {
+        spark.sql("""
+                    |create table iceberg_cow_update_ansi_tb (
+                    |  id int,
+                    |  name string,
+                    |  age int
+                    |) using iceberg
+                    |tblproperties (
+                    |  'format-version' = '2',
+                    |  'write.delete.mode' = 'copy-on-write',
+                    |  'write.update.mode' = 'copy-on-write',
+                    |  'write.merge.mode' = 'copy-on-write'
+                    |)
+                    |""".stripMargin)
+
+        spark.sql("""
+                    |insert into table iceberg_cow_update_ansi_tb values
+                    |  (1, 'Name1', 23),
+                    |  (2, 'Name2', 30),
+                    |  (3, 'Name3', 35)
+                    |""".stripMargin)
+
+        spark.sql("""
+                    |update iceberg_cow_update_ansi_tb
+                    |set name = 'Name4'
+                    |where id = 1
+                    |""".stripMargin)
+
+        checkAnswer(
+          spark.sql("""
+                      |select id, name, age
+                      |from iceberg_cow_update_ansi_tb
+                      |order by id
+                      |""".stripMargin),
+          Seq(Row(1, "Name4", 23), Row(2, "Name2", 30), Row(3, "Name3", 35))
+        )
+      }
+    }
+  }
 }
