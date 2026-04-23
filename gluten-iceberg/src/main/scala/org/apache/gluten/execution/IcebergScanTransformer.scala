@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPru
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.connector.catalog.Table
 import org.apache.spark.sql.connector.read.Scan
+import org.apache.spark.sql.execution.ExecSubqueryExpression
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.types.{ArrayType, DataType, StructType}
@@ -343,10 +344,12 @@ object IcebergScanTransformer {
       RowIndexMetadataColumnNames
 
   def apply(batchScan: BatchScanExec): IcebergScanTransformer = {
+    val output =
+      batchScan.output.map(a => a.withName(AvroSchemaUtil.makeCompatibleName(a.name)))
     new IcebergScanTransformer(
-      batchScan.output.map(a => a.withName(AvroSchemaUtil.makeCompatibleName(a.name))),
+      output,
       batchScan.scan,
-      batchScan.runtimeFilters,
+      runtimeFiltersFor(output, batchScan.runtimeFilters),
       table = SparkShimLoader.getSparkShims.getBatchScanExecTable(batchScan),
       keyGroupedPartitioning = SparkShimLoader.getSparkShims.getKeyGroupedPartitioning(batchScan),
       commonPartitionValues = SparkShimLoader.getSparkShims.getCommonPartitionValues(batchScan)
@@ -374,6 +377,31 @@ object IcebergScanTransformer {
       case s: org.apache.iceberg.types.Types.StructType =>
         s.fields().stream().anyMatch(f => containsMetadataColumn(f))
       case _ => field.fieldId() >= (Integer.MAX_VALUE - 200)
+    }
+  }
+
+  private def runtimeFiltersFor(
+      output: Seq[AttributeReference],
+      runtimeFilters: Seq[Expression]): Seq[Expression] = {
+    if (output.exists(isRowLevelMetadataColumn)) {
+      // Runtime filters are optional pruning. Subquery filters on row-level metadata can be
+      // re-planned by AQE while native Iceberg writes call executeColumnar(), which is unsafe.
+      runtimeFilters.filterNot(containsSubquery)
+    } else {
+      runtimeFilters
+    }
+  }
+
+  private def isRowLevelMetadataColumn(attr: AttributeReference): Boolean = {
+    val name = attr.name.toLowerCase(Locale.ROOT)
+    name == MetadataColumns.FILE_PATH.name().toLowerCase(Locale.ROOT) ||
+    RowIndexMetadataColumnNames.contains(name)
+  }
+
+  private def containsSubquery(expression: Expression): Boolean = {
+    expression.exists {
+      case _: ExecSubqueryExpression => true
+      case _ => false
     }
   }
 }
