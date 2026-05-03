@@ -39,6 +39,9 @@
 
 #include "compute/VeloxRuntime.h"
 #include "config/VeloxConfig.h"
+#ifdef ENABLE_S3
+#include "filesystem/GlutenS3FileSystem.h"
+#endif
 #include "jni/JniFileSystem.h"
 #include "memory/GlutenBufferedInputBuilder.h"
 #include "operators/functions/SparkExprToSubfieldFilterParser.h"
@@ -55,7 +58,6 @@
 #include "velox/connectors/hive/storage_adapters/gcs/RegisterGcsFileSystem.h" // @manual
 #include "velox/connectors/hive/storage_adapters/hdfs/HdfsFileSystem.h"
 #include "velox/connectors/hive/storage_adapters/hdfs/RegisterHdfsFileSystem.h" // @manual
-#include "velox/connectors/hive/storage_adapters/s3fs/RegisterS3FileSystem.h" // @manual
 #include "velox/dwio/orc/reader/OrcReader.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
@@ -162,7 +164,7 @@ void VeloxBackend::init(
   velox::filesystems::registerHdfsFileSystem();
 #endif
 #ifdef ENABLE_S3
-  velox::filesystems::registerS3FileSystem();
+  registerGlutenS3FileSystem();
 #endif
 #ifdef ENABLE_GCS
   velox::filesystems::registerGcsFileSystem();
@@ -372,7 +374,7 @@ void VeloxBackend::tearDown() {
   }
 #endif
 #ifdef ENABLE_S3
-  velox::filesystems::finalizeS3FileSystem();
+  finalizeGlutenS3FileSystem();
 #endif
 
   // Destruct IOThreadPoolExecutor will join all threads.
