@@ -209,6 +209,13 @@ class Spark33Shims extends SparkShims {
     }
   }
 
+  override def withAnsiEvalMode(expr: Expression): Boolean = {
+    expr match {
+      case _: Cast => SQLConf.get.ansiEnabled
+      case _ => false
+    }
+  }
+
   override def createParquetFilters(
       conf: SQLConf,
       schema: MessageType,
