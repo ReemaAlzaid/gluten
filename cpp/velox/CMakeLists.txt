@@ -170,6 +170,7 @@ set(VELOX_SRCS
     memory/VeloxMemoryManager.cc
     operators/functions/RegistrationAllFunctions.cc
     operators/functions/RowConstructorWithNull.cc
+    operators/functions/SparkCastModeSpecialForms.cc
     operators/functions/SparkExprToSubfieldFilterParser.cc
     operators/plannodes/RowVectorStream.cc
     operators/hashjoin/HashTableBuilder.cc

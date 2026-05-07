@@ -19,6 +19,7 @@
 #include "operators/functions/Arithmetic.h"
 #include "operators/functions/RowConstructorWithNull.h"
 #include "operators/functions/RowFunctionWithNull.h"
+#include "operators/functions/SparkCastModeSpecialForms.h"
 #include "velox/expression/SpecialFormRegistry.h"
 #include "velox/expression/VectorFunction.h"
 #include "velox/functions/iceberg/Register.h"
@@ -83,6 +84,7 @@ void registerFunctionOverwrite() {
 
 void registerAllFunctions() {
   velox::functions::sparksql::registerFunctions("");
+  registerSparkCastModeSpecialForms();
   velox::aggregate::prestosql::registerAllAggregateFunctions(
       "", true /*registerCompanionFunctions*/, false /*onlyPrestoSignatures*/, true /*overwrite*/);
   velox::functions::aggregate::sparksql::registerAggregateFunctions(

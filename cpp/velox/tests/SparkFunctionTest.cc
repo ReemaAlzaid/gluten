@@ -18,6 +18,10 @@
 #include <vector>
 
 #include "operators/functions/RegistrationAllFunctions.h"
+#include "operators/functions/SparkCastModeSpecialForms.h"
+#include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/Expressions.h"
+#include "velox/core/QueryConfig.h"
 #include "velox/functions/sparksql/tests/SparkFunctionBaseTest.h"
 
 using namespace facebook::velox::functions::sparksql::test;
@@ -110,4 +114,33 @@ TEST_F(SparkFunctionTest, roundWithDecimal) {
   runRoundWithDecimalTest<int32_t>(testRoundWithDecIntegralData<int32_t>());
   runRoundWithDecimalTest<int16_t>(testRoundWithDecIntegralData<int16_t>());
   runRoundWithDecimalTest<int8_t>(testRoundWithDecIntegralData<int8_t>());
+}
+
+TEST_F(SparkFunctionTest, expressionLevelAnsiCastIgnoresSessionAnsiOff) {
+  queryCtx_->testingOverrideConfigUnsafe(
+      {{core::QueryConfig::kSparkAnsiEnabled, "false"}});
+  auto input = makeRowVector({makeFlatVector<std::string>({"2147483648"})});
+  core::TypedExprPtr field =
+      std::make_shared<const core::FieldAccessTypedExpr>(VARCHAR(), "c0");
+  auto ansiCast = std::make_shared<const core::CallTypedExpr>(
+      INTEGER(),
+      std::vector<core::TypedExprPtr>{field},
+      gluten::kSparkAnsiCast);
+
+  VELOX_ASSERT_THROW(evaluate(ansiCast, input), "Cannot cast");
+}
+
+TEST_F(SparkFunctionTest, expressionLevelLegacyCastIgnoresSessionAnsiOn) {
+  queryCtx_->testingOverrideConfigUnsafe(
+      {{core::QueryConfig::kSparkAnsiEnabled, "true"}});
+  auto input = makeRowVector({makeFlatVector<int32_t>({1234567})});
+  core::TypedExprPtr field =
+      std::make_shared<const core::FieldAccessTypedExpr>(INTEGER(), "c0");
+  auto legacyCast = std::make_shared<const core::CallTypedExpr>(
+      TINYINT(),
+      std::vector<core::TypedExprPtr>{field},
+      gluten::kSparkLegacyCast);
+
+  facebook::velox::test::assertEqualVectors(
+      makeFlatVector<int8_t>({-121}), evaluate(legacyCast, input));
 }
