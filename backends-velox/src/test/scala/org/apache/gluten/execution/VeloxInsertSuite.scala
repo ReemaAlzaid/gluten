@@ -17,7 +17,7 @@
 package org.apache.gluten.execution
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.Row
+import org.apache.spark.sql.{AnalysisException, Row}
 import org.apache.spark.sql.internal.SQLConf
 
 class VeloxInsertSuite extends VeloxWholeStageTransformerSuite {
@@ -33,25 +33,93 @@ class VeloxInsertSuite extends VeloxWholeStageTransformerSuite {
   }
 
   test("storeAssignmentPolicy default ANSI is independent from ANSI mode") {
-    withTable("store_assignment_ansi") {
+    withTable("store_assignment_ansi_src", "store_assignment_ansi") {
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
         assert(SQLConf.get.storeAssignmentPolicy == SQLConf.StoreAssignmentPolicy.ANSI)
 
-        spark.sql("CREATE TABLE store_assignment_ansi (c INT) USING PARQUET")
-        val exception = intercept[Exception] {
-          spark.sql("INSERT INTO store_assignment_ansi SELECT '2147483648'").collect()
+        createTableWithValue("store_assignment_ansi_src", "STRING", "'2147483648'")
+        createTable("store_assignment_ansi", "INT")
+        assertUnsafeCastAnalysisException("STRING", "INT") {
+          insertIntoFrom("store_assignment_ansi", "store_assignment_ansi_src").collect()
         }
-        val message = exceptionMessages(exception)
-        assert(message.contains("2147483648"), message)
-        assert(message.contains("CAST_INVALID_INPUT") || message.contains("Cannot cast"), message)
 
         withSQLConf(
           SQLConf.STORE_ASSIGNMENT_POLICY.key -> SQLConf.StoreAssignmentPolicy.LEGACY.toString) {
-          spark.sql("INSERT INTO store_assignment_ansi SELECT '2147483648'").collect()
+          val insert = insertIntoFrom("store_assignment_ansi", "store_assignment_ansi_src")
+          insert.collect()
+          checkGlutenPlan[ProjectExecTransformer](insert)
           checkAnswer(spark.table("store_assignment_ansi"), Row(null))
         }
       }
     }
+  }
+
+  test("storeAssignmentPolicy preserves configured cast modes") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withTable("store_assignment_ansi_src", "store_assignment_ansi") {
+        createTableWithValue("store_assignment_ansi_src", "STRING", "'2147483648'")
+        createTable("store_assignment_ansi", "INT")
+
+        withSQLConf(
+          SQLConf.STORE_ASSIGNMENT_POLICY.key -> SQLConf.StoreAssignmentPolicy.ANSI.toString) {
+          assertUnsafeCastAnalysisException("STRING", "INT") {
+            insertIntoFrom("store_assignment_ansi", "store_assignment_ansi_src").collect()
+          }
+          checkAnswer(spark.table("store_assignment_ansi"), Seq.empty[Row])
+        }
+      }
+    }
+
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("store_assignment_legacy_src", "store_assignment_legacy") {
+        createTableWithValue("store_assignment_legacy_src", "STRING", "'2147483648'")
+        createTable("store_assignment_legacy", "INT")
+
+        withSQLConf(
+          SQLConf.STORE_ASSIGNMENT_POLICY.key -> SQLConf.StoreAssignmentPolicy.LEGACY.toString) {
+          val insert = insertIntoFrom("store_assignment_legacy", "store_assignment_legacy_src")
+          insert.collect()
+          checkGlutenPlan[ProjectExecTransformer](insert)
+          checkAnswer(spark.table("store_assignment_legacy"), Row(null))
+        }
+      }
+    }
+  }
+
+  test("storeAssignmentPolicy strict rejects unsafe insert casts") {
+    withTable("store_assignment_strict_src", "store_assignment_strict") {
+      withSQLConf(
+        SQLConf.STORE_ASSIGNMENT_POLICY.key -> SQLConf.StoreAssignmentPolicy.STRICT.toString) {
+        createTableWithValue("store_assignment_strict_src", "INT", "1")
+        createTable("store_assignment_strict", "TINYINT")
+
+        assertUnsafeCastAnalysisException("INT", "TINYINT") {
+          insertIntoFrom("store_assignment_strict", "store_assignment_strict_src").collect()
+        }
+        checkAnswer(spark.table("store_assignment_strict"), Seq.empty[Row])
+      }
+    }
+  }
+
+  private def createTable(table: String, dataType: String): Unit =
+    spark.sql(s"CREATE TABLE $table (c $dataType) USING PARQUET")
+
+  private def createTableWithValue(table: String, dataType: String, value: String): Unit = {
+    createTable(table, dataType)
+    spark.sql(s"INSERT INTO $table VALUES ($value)").collect()
+  }
+
+  private def insertIntoFrom(target: String, source: String) =
+    spark.sql(s"INSERT INTO $target SELECT c FROM $source")
+
+  private def assertUnsafeCastAnalysisException(
+      fromType: String,
+      toType: String)(f: => Unit): Unit = {
+    val exception = intercept[AnalysisException](f)
+    val message = exceptionMessages(exception)
+    assert(message.contains(fromType), message)
+    assert(message.contains(toType), message)
+    assert(message.contains("cast") || message.contains("Cast"), message)
   }
 
   private def exceptionMessages(e: Throwable): String = {
