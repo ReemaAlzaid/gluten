@@ -33,6 +33,9 @@ bool isIntegralType(const TypePtr& type) {
       type == BIGINT();
 }
 
+// Keep this in sync with Velox's SparkCastCallToSpecialForm::isAnsiSupported.
+// Velox's helper is private today; this local copy is needed for expression-level
+// ANSI and legacy cast modes.
 bool isAnsiSupported(const TypePtr& fromType, const TypePtr& toType) {
   if (fromType->isVarchar()) {
     return toType->isBoolean() || toType->isDate() || isIntegralType(toType);

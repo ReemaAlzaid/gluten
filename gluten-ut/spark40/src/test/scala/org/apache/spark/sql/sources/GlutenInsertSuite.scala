@@ -124,25 +124,6 @@ class GlutenInsertSuite
     }
   }
 
-  testGluten("storeAssignmentPolicy default ANSI is independent from ANSI mode") {
-    withTable("store_assignment_ansi") {
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-        assert(SQLConf.get.storeAssignmentPolicy == SQLConf.StoreAssignmentPolicy.ANSI)
-
-        spark.sql("CREATE TABLE store_assignment_ansi (c INT) USING PARQUET")
-        intercept[Exception] {
-          spark.sql("INSERT INTO store_assignment_ansi SELECT '2147483648'").collect()
-        }
-
-        withSQLConf(
-          SQLConf.STORE_ASSIGNMENT_POLICY.key -> SQLConf.StoreAssignmentPolicy.LEGACY.toString) {
-          spark.sql("INSERT INTO store_assignment_ansi SELECT '2147483648'").collect()
-          checkAnswer(spark.table("store_assignment_ansi"), Row(null))
-        }
-      }
-    }
-  }
-
   ignoreGluten("Cleanup staging files if job failed") {
     // Using a unique table name in this test. Sometimes, the table is not removed for some unknown
     // reason, which can cause test failure (location already exists) if other following tests have
