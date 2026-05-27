@@ -15,10 +15,23 @@
 
 add_executable(velox_roaring_bitmap_array_test RoaringBitmapArrayTest.cpp)
 
-target_link_libraries(velox_roaring_bitmap_array_test velox roaring
-                      GTest::gtest GTest::gtest_main)
+target_link_libraries(
+  velox_roaring_bitmap_array_test velox ${GLUTEN_ROARING_LINK_LIBRARY}
+  GTest::gtest GTest::gtest_main)
 
 add_test(
   NAME velox_roaring_bitmap_array_test
   COMMAND velox_roaring_bitmap_array_test
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(
+  velox_delta_read_test DeltaConnectorTest.cpp
+                        DeltaDeletionVectorReaderTest.cpp DeltaSplitTest.cpp)
+
+target_link_libraries(velox_delta_read_test velox roaring
+                      facebook::velox::exec_test_lib GTest::gtest)
+
+add_test(
+  NAME velox_delta_read_test
+  COMMAND velox_delta_read_test
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})

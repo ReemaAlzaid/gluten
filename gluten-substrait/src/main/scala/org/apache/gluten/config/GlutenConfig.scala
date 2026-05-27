@@ -225,6 +225,9 @@ class GlutenConfig(conf: SQLConf) extends GlutenCoreConfig(conf) {
 
   def columnarShuffleReallocThreshold: Double = getConf(COLUMNAR_SHUFFLE_REALLOC_THRESHOLD)
 
+  def columnarShufflePartitionBufferEvictThreshold: Int =
+    getConf(COLUMNAR_SHUFFLE_PARTITION_BUFFER_EVICT_THRESHOLD)
+
   def columnarShuffleMergeThreshold: Double = getConf(SHUFFLE_WRITER_MERGE_THRESHOLD)
 
   def columnarShuffleCodec: Option[String] = getConf(COLUMNAR_SHUFFLE_CODEC)
@@ -341,8 +344,6 @@ class GlutenConfig(conf: SQLConf) extends GlutenCoreConfig(conf) {
   // Please use `BackendsApiManager.getSettings.enableNativeWriteFiles()` instead
   def enableNativeWriter: Option[Boolean] = getConf(NATIVE_WRITER_ENABLED)
 
-  def enableNativeArrowReader: Boolean = getConf(NATIVE_ARROW_READER_ENABLED)
-
   def enableColumnarProjectCollapse: Boolean = getConf(ENABLE_COLUMNAR_PROJECT_COLLAPSE)
 
   def enableColumnarPartialProject: Boolean = getConf(ENABLE_COLUMNAR_PARTIAL_PROJECT)
@@ -377,6 +378,10 @@ class GlutenConfig(conf: SQLConf) extends GlutenCoreConfig(conf) {
 
   def parquetMetadataFallbackFileLimit: Int = {
     getConf(PARQUET_UNEXPECTED_METADATA_FALLBACK_FILE_LIMIT)
+  }
+
+  def parquetMetadataFallbackSamplePercentage: Double = {
+    getConf(PARQUET_UNEXPECTED_METADATA_FALLBACK_SAMPLE_PERCENTAGE)
   }
 
   def enableColumnarRange: Boolean = getConf(COLUMNAR_RANGE_ENABLED)
@@ -458,7 +463,7 @@ object GlutenConfig extends ConfigRegistry {
   val SPARK_MAX_BROADCAST_TABLE_SIZE = "spark.sql.maxBroadcastTableSize"
 
   def get: GlutenConfig = {
-    new GlutenConfig(SQLConf.get)
+    new GlutenConfig(GlutenCoreConfig.activeSQLConf)
   }
 
   def prefixOf(backendName: String): String = s"spark.gluten.sql.columnar.backend.$backendName"
@@ -480,9 +485,6 @@ object GlutenConfig extends ConfigRegistry {
     SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS.key,
     "spark.io.compression.codec",
     "spark.sql.decimalOperations.allowPrecisionLoss",
-    "spark.gluten.sql.columnar.backend.velox.bloomFilter.expectedNumItems",
-    "spark.gluten.sql.columnar.backend.velox.bloomFilter.numBits",
-    "spark.gluten.sql.columnar.backend.velox.bloomFilter.maxNumBits",
     // s3 config
     SPARK_S3_ACCESS_KEY,
     SPARK_S3_SECRET_KEY,
@@ -1021,6 +1023,19 @@ object GlutenConfig extends ConfigRegistry {
     buildStaticConf("spark.gluten.sql.columnar.tableCache")
       .doc("Enable or disable columnar table cache.")
       .booleanConf
+      .createWithDefault(true)
+
+  val COLUMNAR_TABLE_CACHE_PARTITION_STATS_ENABLED =
+    buildConf("spark.gluten.sql.columnar.tableCache.partitionStats.enabled")
+      .doc(
+        "When true, the Velox columnar cache serializer computes per-partition " +
+          "min/max/null/row-count stats and embeds them in the cached payload so " +
+          "that the Spark optimizer can prune whole partitions on equality / " +
+          "range predicates. When false (default) the serializer writes the " +
+          "legacy raw payload with no stats, and partition pruning is disabled. " +
+          "Default is off until cross-workload benchmarks confirm zero regression " +
+          "on non-pruning queries.")
+      .booleanConf
       .createWithDefault(false)
 
   val COLUMNAR_PHYSICAL_JOIN_OPTIMIZATION_THROTTLE =
@@ -1059,6 +1074,14 @@ object GlutenConfig extends ConfigRegistry {
     buildConf("spark.gluten.sql.columnar.shuffle.realloc.threshold").doubleConf
       .checkValue(v => v >= 0 && v <= 1, "Buffer reallocation threshold must between [0, 1]")
       .createWithDefault(0.25)
+
+  val COLUMNAR_SHUFFLE_PARTITION_BUFFER_EVICT_THRESHOLD =
+    buildConf("spark.gluten.sql.columnar.shuffle.partitionBufferEvictThreshold")
+      .doc(
+        "For Velox hash shuffle writer, evict partition buffers larger than this threshold " +
+          "after splitting an input batch. Use non-positive value to disable this feature.")
+      .intConf
+      .createWithDefault(-1)
 
   val COLUMNAR_SHUFFLE_CODEC =
     buildConf("spark.gluten.sql.columnar.shuffle.codec")
@@ -1328,12 +1351,6 @@ object GlutenConfig extends ConfigRegistry {
       .booleanConf
       .createWithDefault(true)
 
-  val NATIVE_ARROW_READER_ENABLED =
-    buildConf("spark.gluten.sql.native.arrow.reader.enabled")
-      .doc("This is config to specify whether to enable the native columnar csv reader")
-      .booleanConf
-      .createWithDefault(false)
-
   val NATIVE_WRITE_FILES_COLUMN_METADATA_EXCLUSION_LIST =
     buildConf("spark.gluten.sql.native.writeColumnMetadataExclusionList")
       .doc(
@@ -1572,6 +1589,16 @@ object GlutenConfig extends ConfigRegistry {
       .intConf
       .checkValue(_ > 0, s"must be positive.")
       .createWithDefault(10)
+
+  val PARQUET_UNEXPECTED_METADATA_FALLBACK_SAMPLE_PERCENTAGE =
+    buildConf("spark.gluten.sql.fallbackUnexpectedMetadataParquet.samplePercentage")
+      .doc("The percentage of root paths to sample for metadata validation when the number" +
+        " of root paths is large. Value range is (0, 1.0]. 1.0 means check all paths" +
+        " (no sampling). A smaller value reduces validation cost for tables with many" +
+        " partitions.")
+      .doubleConf
+      .checkValue(v => v > 0 && v <= 1.0, "must be in range (0, 1.0].")
+      .createWithDefault(0.1)
 
   val COLUMNAR_RANGE_ENABLED =
     buildConf("spark.gluten.sql.columnar.range")
