@@ -44,7 +44,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.UTF8String
 
-import com.esotericsoftware.kryo.{Kryo, Serializer => KryoSerializer}
+import com.esotericsoftware.kryo.{Kryo, KryoException, Serializer => KryoSerializer}
 import com.esotericsoftware.kryo.DefaultSerializer
 import com.esotericsoftware.kryo.io.{Input, Output}
 import org.apache.arrow.c.ArrowSchema
@@ -55,6 +55,8 @@ import java.math.{BigDecimal => JBigDecimal, BigInteger}
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.Arrays
+
+import scala.util.control.NonFatal
 
 /**
  * A Velox columnar cache batch carrying per-partition column statistics.
@@ -152,14 +154,30 @@ class CachedColumnarBatchKryoSerializer extends KryoSerializer[CachedColumnarBat
     )
     val bytes = new Array[Byte](payloadLen)
     input.readBytes(bytes)
-    // Backward-compat with the V1 wire format (no trailing hasStats / hasSchema booleans):
-    // legacy CachedColumnarBatch instances persisted on disk (DISK_ONLY / MEMORY_AND_DISK)
-    // surviving a rolling upgrade lack these fields. available() is best-effort -- treats
-    // unavailable suffix as "absent" instead of throwing KryoException.
-    val hasStats = input.available() > 0 && input.readBoolean()
-    // Even when hasStats=false we still consume the hasSchema tag to keep the stream aligned.
-    // NB: avoid `val (a: T, b: U) = ...` -- Scala 2.13 erases Tuple2 generics and the typed
-    // pattern match throws MatchError at runtime.
+    // Read the trailing hasStats marker. Catching a Buffer-underflow KryoException
+    // here preserves backward compatibility with the V1 wire format (no trailing
+    // hasStats / hasSchema booleans), which the existing
+    // ColumnarCachedBatchKryoSuite#"V1 wire ..." test locks as a contract:
+    // an absent trailing byte must read as null, not throw.
+    //
+    // Why a try/catch instead of `input.available() > 0 && readBoolean`:
+    // Kryo `Input.available()` returns `(limit - position) + underlyingStream.available()`,
+    // and the JDK `InputStream.available()` contract permits any implementation to
+    // return 0 even when more data follows -- BufferedInputStream over shuffle-spill
+    // / network chunk boundaries routinely does so. When the Kryo buffer is drained
+    // AND the underlying stream reports 0 at the trailing-boolean byte position, the
+    // probe falsely concludes EOF, skips hasStats, and the next readClassAndObject
+    // interprets the stats payload (which contains the schema JSON) as a class name --
+    // surfacing as `ClassNotFoundException: {"type":"struct",...}` with the stack
+    // topped by `DefaultClassResolver.readName`. A try/catch on the real EOF surface
+    // (Kryo "Buffer underflow") avoids the false-EOF probe while still tolerating
+    // V1 wire.
+    //
+    // NB: avoid `val (a: T, b: U) = ...` -- Scala 2.13 erases Tuple2 generics and the
+    // typed pattern match throws MatchError at runtime.
+    val hasStats =
+      try input.readBoolean()
+      catch { case e: KryoException if isBufferUnderflow(e) => false }
     val statsAndSchema: (InternalRow, StructType) = if (hasStats) {
       val statsLen = input.readInt()
       require(
@@ -177,9 +195,21 @@ class CachedColumnarBatchKryoSerializer extends KryoSerializer[CachedColumnarBat
     CachedColumnarBatch(numRows, sizeInBytes, bytes, statsAndSchema._1, statsAndSchema._2)
   }
 
+  // Kryo signals end-of-input by throwing KryoException with a message starting
+  // with "Buffer underflow". There is no dedicated subclass, so a message-prefix
+  // check is the narrowest filter we can apply without swallowing real corruption
+  // (e.g. ClassNotFoundException wrapped during readClassAndObject).
+  private def isBufferUnderflow(e: KryoException): Boolean = {
+    val msg = e.getMessage
+    msg != null && msg.startsWith("Buffer underflow")
+  }
+
   private def readOptionalSchema(input: Input, maxLen: Long): StructType = {
-    // Treat absent trailing bytes as "no schema": V1 wire format predates this field.
-    if (input.available() <= 0 || !input.readBoolean()) {
+    // Trailing schema marker. See readSchema above for the same V1-vs-chunked-fill rationale.
+    val hasSchema =
+      try input.readBoolean()
+      catch { case e: KryoException if isBufferUnderflow(e) => false }
+    if (!hasSchema) {
       null
     } else {
       val schemaLen = input.readInt()
@@ -712,54 +742,27 @@ class ColumnarCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer
              if heavy batch is encountered */
           batch => VeloxColumnarBatches.ensureVeloxBatch(batch)
         }
-        // Hoist the per-partition StructType out of the per-batch hot path: schema is constant
-        // for the lifetime of this iterator, so allocating one StructType per CachedBatch wastes
-        // GC for the many-small-batch case.
+        // Hoist per-partition-iterator constants out of the per-batch hot path:
+        // schema, backend name, partition-stats conf, and the JNI wrapper are all
+        // fixed for the lifetime of this iterator. Allocating them per CachedBatch
+        // wastes GC in the many-small-batch case; GlutenConfig.get in particular
+        // allocates a fresh GlutenConfig(SQLConf.get) on every call.
         val structSchema = StructType(
           schema.map(a => StructField(a.name, a.dataType, a.nullable)))
+        val backendName = BackendsApiManager.getBackendName
+        val partitionStatsEnabled =
+          GlutenConfig.get.getConf(GlutenConfig.COLUMNAR_TABLE_CACHE_PARTITION_STATS_ENABLED)
+        val jni = ColumnarBatchSerializerJniWrapper.create(
+          Runtimes.contextInstance(
+            backendName,
+            "ColumnarCachedBatchSerializer#serialize"))
         new Iterator[CachedBatch] {
           override def hasNext: Boolean = veloxBatches.hasNext
 
           override def next(): CachedBatch = {
             val batch = veloxBatches.next()
-            val jni = ColumnarBatchSerializerJniWrapper.create(
-              Runtimes.contextInstance(
-                BackendsApiManager.getBackendName,
-                "ColumnarCachedBatchSerializer#serialize"))
-            val handle =
-              ColumnarBatches.getNativeHandle(BackendsApiManager.getBackendName, batch)
-            // Route through serializeWithStats when the partition-stats conf is enabled and the
-            // JNI extension is linked in libgluten.so. Capability is detected lazily at the
-            // call site: a new Gluten jar paired with an older native library will throw
-            // UnsatisfiedLinkError on the first invocation; we catch it once, cache the
-            // result, and fall back to the legacy serialize() path emitting stats=null. The
-            // buildFilter wrapper directs such batches through without pruning.
-            val partitionStatsEnabled =
-              GlutenConfig.get.getConf(GlutenConfig.COLUMNAR_TABLE_CACHE_PARTITION_STATS_ENABLED)
-            if (partitionStatsEnabled && ColumnarCachedBatchSerializer.statsExtAvailable) {
-              try {
-                val framed = jni.serializeWithStats(handle)
-                val (stats, bytesBlob) =
-                  CachedColumnarBatchKryoSerializer.parseFramedBytes(framed, structSchema)
-                CachedColumnarBatch(
-                  batch.numRows(),
-                  bytesBlob.length,
-                  bytesBlob,
-                  stats,
-                  structSchema)
-              } catch {
-                case e: UnsatisfiedLinkError =>
-                  ColumnarCachedBatchSerializer.markStatsExtUnavailable(e)
-                  val unsafeBuffer = jni.serialize(handle)
-                  val bytes = unsafeBuffer.toByteArray
-                  CachedColumnarBatch(
-                    batch.numRows(),
-                    bytes.length,
-                    bytes,
-                    stats = null,
-                    schema = null)
-              }
-            } else {
+            val handle = ColumnarBatches.getNativeHandle(backendName, batch)
+            def legacySerializeInline(): CachedBatch = {
               val unsafeBuffer = jni.serialize(handle)
               val bytes = unsafeBuffer.toByteArray
               CachedColumnarBatch(
@@ -768,6 +771,22 @@ class ColumnarCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer
                 bytes,
                 stats = null,
                 schema = null)
+            }
+            // Route through serializeWithStats when the partition-stats conf is enabled and the
+            // JNI extension is linked in libgluten.so. Capability is detected lazily at the
+            // call site: a new Gluten jar paired with an older native library will throw
+            // UnsatisfiedLinkError on the first invocation; we catch it once, cache the
+            // result, and fall back to the legacy serialize() path emitting stats=null. The
+            // buildFilter wrapper directs such batches through without pruning.
+            if (partitionStatsEnabled && ColumnarCachedBatchSerializer.statsExtAvailable) {
+              ColumnarCachedBatchSerializer.serializeOneBatchWithStats(
+                jni,
+                handle,
+                batch.numRows(),
+                structSchema,
+                () => legacySerializeInline())
+            } else {
+              legacySerializeInline()
             }
           }
         }
@@ -937,6 +956,60 @@ class ColumnarCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer
 }
 
 object ColumnarCachedBatchSerializer extends Logging {
+  // Encapsulates the per-batch serializeWithStats fast path so the catch arms can
+  // be exercised in unit tests with a stubbed jni wrapper. Two-arm catch:
+  //   - UnsatisfiedLinkError trips the JVM-lifetime capability latch via
+  //     markStatsExtUnavailable (one-way; native symbol gone for the whole JVM).
+  //   - NonFatal absorbs per-batch corruption (corrupt magic, truncated frame,
+  //     Kryo decode failure) without tripping the latch; the next batch retries
+  //     the fast path. A separate counter (warnCorruptStatsFrame) caps the
+  //     warning floor so high-throughput workloads don't drown the executor log.
+  private[execution] def serializeOneBatchWithStats(
+      jni: ColumnarBatchSerializerJniWrapper,
+      handle: Long,
+      numRows: Int,
+      structSchema: StructType,
+      fallbackToLegacy: () => CachedBatch): CachedBatch = {
+    try {
+      val framed = jni.serializeWithStats(handle)
+      val (stats, bytesBlob) =
+        CachedColumnarBatchKryoSerializer.parseFramedBytes(framed, structSchema)
+      CachedColumnarBatch(numRows, bytesBlob.length, bytesBlob, stats, structSchema)
+    } catch {
+      case e: UnsatisfiedLinkError =>
+        markStatsExtUnavailable(e)
+        fallbackToLegacy()
+      case NonFatal(e) =>
+        warnCorruptStatsFrame(e)
+        fallbackToLegacy()
+    }
+  }
+
+  // Per-JVM cap on corrupt-frame warnings to avoid log flooding when a native
+  // regression produces malformed frames batch after batch. Capability latch is
+  // intentionally NOT tripped here: a corrupt frame is a per-batch event, not a
+  // capability loss, and the next batch should still attempt the fast path.
+  private val corruptFrameWarnCount = new java.util.concurrent.atomic.AtomicLong(0L)
+  private val CORRUPT_FRAME_WARN_CAP = 100L
+
+  def warnCorruptStatsFrame(cause: Throwable): Unit = {
+    val n = corruptFrameWarnCount.incrementAndGet()
+    if (n <= CORRUPT_FRAME_WARN_CAP) {
+      logWarning(
+        s"serializeWithStats produced a corrupt/undecodable frame for one cached batch; " +
+          s"falling back to legacy serialize() for this batch (stats=null). Capability " +
+          s"latch unchanged. [$n/$CORRUPT_FRAME_WARN_CAP]",
+        cause
+      )
+      if (n == CORRUPT_FRAME_WARN_CAP) {
+        logWarning(
+          s"Further corrupt-frame warnings suppressed for the JVM lifetime " +
+            s"(cap=$CORRUPT_FRAME_WARN_CAP reached). Capability latch remains active; " +
+            s"investigate native serializeWithStats output.")
+      }
+    }
+  }
+
   // Lazy capability flag for the serializeWithStats JNI symbol. A new Gluten jar paired with an
   // older libgluten.so will throw UnsatisfiedLinkError on the first invocation; the call site
   // catches it once via markStatsExtUnavailable() and we degrade to the legacy serialize() path
@@ -955,11 +1028,5 @@ object ColumnarCachedBatchSerializer extends Logging {
         cause
       )
     }
-  }
-
-  // Visible for testing: reset the capability flag so a unit test can re-exercise the
-  // probe-once semantics.
-  private[execution] def resetStatsExtAvailableForTesting(): Unit = {
-    statsExtAvailableFlag = true
   }
 }
