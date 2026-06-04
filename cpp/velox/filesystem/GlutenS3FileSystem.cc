@@ -44,8 +44,7 @@ std::unique_ptr<velox::WriteFile> GlutenS3FileSystem::openFileForWrite(
 }
 
 void registerGlutenS3FileSystem(filesystems::CacheKeyFn cacheKeyFunc) {
-  filesystems::registerS3FileSystem(
-      std::move(cacheKeyFunc), glutenS3FileSystemFactory);
+  filesystems::registerS3FileSystem(std::move(cacheKeyFunc), glutenS3FileSystemFactory);
 }
 
 void finalizeGlutenS3FileSystem() {

@@ -36,29 +36,15 @@ namespace filesystems = facebook::velox::filesystems;
 TEST(GlutenS3FileSystemTest, registeredFileSystemUsesGlutenSubclass) {
   registerGlutenS3FileSystem();
 
-  auto config = std::make_shared<velox::config::ConfigBase>(
-      std::unordered_map<std::string, std::string>{
-          {filesystems::S3Config::baseConfigKey(
-               filesystems::S3Config::Keys::kEndpoint),
-           "http://127.0.0.1:9000"},
-          {filesystems::S3Config::baseConfigKey(
-               filesystems::S3Config::Keys::kAccessKey),
-           "access"},
-          {filesystems::S3Config::baseConfigKey(
-               filesystems::S3Config::Keys::kSecretKey),
-           "secret"},
-          {filesystems::S3Config::baseConfigKey(
-               filesystems::S3Config::Keys::kSSLEnabled),
-           "false"},
-          {filesystems::S3Config::baseConfigKey(
-               filesystems::S3Config::Keys::kPathStyleAccess),
-           "true"},
-          {filesystems::S3Config::baseConfigKey(
-               filesystems::S3Config::Keys::kIMDSEnabled),
-           "false"}});
+  auto config = std::make_shared<velox::config::ConfigBase>(std::unordered_map<std::string, std::string>{
+      {filesystems::S3Config::baseConfigKey(filesystems::S3Config::Keys::kEndpoint), "http://127.0.0.1:9000"},
+      {filesystems::S3Config::baseConfigKey(filesystems::S3Config::Keys::kAccessKey), "access"},
+      {filesystems::S3Config::baseConfigKey(filesystems::S3Config::Keys::kSecretKey), "secret"},
+      {filesystems::S3Config::baseConfigKey(filesystems::S3Config::Keys::kSSLEnabled), "false"},
+      {filesystems::S3Config::baseConfigKey(filesystems::S3Config::Keys::kPathStyleAccess), "true"},
+      {filesystems::S3Config::baseConfigKey(filesystems::S3Config::Keys::kIMDSEnabled), "false"}});
 
-  auto fileSystem =
-      filesystems::getFileSystem("s3://gluten-test-bucket/test", config);
+  auto fileSystem = filesystems::getFileSystem("s3://gluten-test-bucket/test", config);
 
   EXPECT_NE(dynamic_cast<GlutenS3FileSystem*>(fileSystem.get()), nullptr);
   EXPECT_EQ(fileSystem->name(), "S3");
