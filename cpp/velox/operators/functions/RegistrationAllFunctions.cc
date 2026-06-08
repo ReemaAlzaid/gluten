@@ -19,7 +19,6 @@
 #include "operators/functions/Arithmetic.h"
 #include "operators/functions/RowConstructorWithNull.h"
 #include "operators/functions/RowFunctionWithNull.h"
-#include "operators/functions/SparkCastModeSpecialForms.h"
 #include "velox/expression/SpecialFormRegistry.h"
 #include "velox/expression/VectorFunction.h"
 #include "velox/functions/iceberg/Register.h"
@@ -33,6 +32,7 @@
 #include "velox/functions/sparksql/Rand.h"
 #include "velox/functions/sparksql/aggregates/Register.h"
 #include "velox/functions/sparksql/registration/Register.h"
+#include "velox/functions/sparksql/specialforms/SparkCastExpr.h"
 #include "velox/functions/sparksql/window/WindowFunctionsRegistration.h"
 
 using namespace facebook;
@@ -48,6 +48,9 @@ void registerPrestoVectorFunctions() {
 
 namespace gluten {
 namespace {
+
+constexpr const char* kSparkAnsiCast = "spark_ansi_cast";
+constexpr const char* kSparkLegacyCast = "spark_legacy_cast";
 
 void registerFunctionOverwrite() {
   velox::functions::registerUnaryNumeric<RoundFunction>({"round"});
@@ -84,7 +87,8 @@ void registerFunctionOverwrite() {
 
 void registerAllFunctions() {
   velox::functions::sparksql::registerFunctions("");
-  registerSparkCastModeSpecialForms();
+  velox::functions::sparksql::registerSparkCastModeSpecialForms(
+      kSparkAnsiCast, kSparkLegacyCast);
   velox::aggregate::prestosql::registerAllAggregateFunctions(
       "", true /*registerCompanionFunctions*/, false /*onlyPrestoSignatures*/, true /*overwrite*/);
   velox::functions::aggregate::sparksql::registerAggregateFunctions(

@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "operators/functions/RegistrationAllFunctions.h"
-#include "operators/functions/SparkCastModeSpecialForms.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/core/Expressions.h"
 #include "velox/core/QueryConfig.h"
@@ -26,6 +25,11 @@
 
 using namespace facebook::velox::functions::sparksql::test;
 using namespace facebook::velox;
+
+namespace {
+constexpr const char* kSparkAnsiCast = "spark_ansi_cast";
+constexpr const char* kSparkLegacyCast = "spark_legacy_cast";
+} // namespace
 
 class SparkFunctionTest : public SparkFunctionBaseTest {
  public:
@@ -125,7 +129,7 @@ TEST_F(SparkFunctionTest, expressionLevelAnsiCastIgnoresSessionAnsiOff) {
   auto ansiCast = std::make_shared<const core::CallTypedExpr>(
       INTEGER(),
       std::vector<core::TypedExprPtr>{field},
-      gluten::kSparkAnsiCast);
+      kSparkAnsiCast);
 
   VELOX_ASSERT_THROW(evaluate(ansiCast, input), "Cannot cast");
 }
@@ -139,7 +143,7 @@ TEST_F(SparkFunctionTest, expressionLevelLegacyCastIgnoresSessionAnsiOn) {
   auto legacyCast = std::make_shared<const core::CallTypedExpr>(
       TINYINT(),
       std::vector<core::TypedExprPtr>{field},
-      gluten::kSparkLegacyCast);
+      kSparkLegacyCast);
 
   facebook::velox::test::assertEqualVectors(
       makeFlatVector<int8_t>({-121}), evaluate(legacyCast, input));

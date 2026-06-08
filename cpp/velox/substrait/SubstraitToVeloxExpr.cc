@@ -17,7 +17,6 @@
 
 #include "SubstraitToVeloxExpr.h"
 #include "TypeUtils.h"
-#include "operators/functions/SparkCastModeSpecialForms.h"
 #include "velox/vector/FlatVector.h"
 #include "velox/vector/VariantToVector.h"
 
@@ -26,6 +25,9 @@
 using namespace facebook::velox;
 
 namespace {
+constexpr const char* kSparkAnsiCast = "spark_ansi_cast";
+constexpr const char* kSparkLegacyCast = "spark_legacy_cast";
+
 ArrayVectorPtr makeArrayVector(const VectorPtr& elements) {
   BufferPtr offsets = allocateOffsets(1, elements->pool());
   BufferPtr sizes = allocateOffsets(1, elements->pool());
