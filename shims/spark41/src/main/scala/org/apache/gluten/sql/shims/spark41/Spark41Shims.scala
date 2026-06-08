@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical.{KeyGroupedPartitioning, KeyGroupedShuffleSpec, Partitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
-import org.apache.spark.sql.catalyst.util.{InternalRowComparableWrapper, MapData, TimestampFormatter}
+import org.apache.spark.sql.catalyst.util.{CollationFactory, InternalRowComparableWrapper, MapData, TimestampFormatter}
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.connector.catalog.Table
 import org.apache.spark.sql.connector.read.{HasPartitionKey, InputPartition, Scan}
@@ -610,6 +610,17 @@ class Spark41Shims extends SparkShims {
     DecimalPrecisionTypeCoercion.widerDecimalType(d1, d2)
   }
 
+  override def decimalAllowPrecisionLoss(expr: BinaryArithmetic): Boolean = expr match {
+    case a: Add => a.evalContext.allowDecimalPrecisionLoss
+    case s: Subtract => s.evalContext.allowDecimalPrecisionLoss
+    case m: Multiply => m.evalContext.allowDecimalPrecisionLoss
+    case d: Divide => d.evalContext.allowDecimalPrecisionLoss
+    // Remainder and Pmod do not carry evalContext in Spark 4.1. They also throw
+    // GlutenNotSupportException in DecimalArithmeticUtil.getResultType, so they never
+    // reach Velox execution; SQLConf.get is a safe fallback for the name-lookup path.
+    case _ => SQLConf.get.decimalOperationsAllowPrecisionLoss
+  }
+
   override def getErrorMessage(raiseError: RaiseError): Option[Expression] = {
     raiseError.errorParms match {
       case CreateMap(children, _)
@@ -663,4 +674,7 @@ class Spark41Shims extends SparkShims {
   override def isLeftSingleJoinType(joinType: JoinType): Boolean = {
     joinType == LeftSingle
   }
+
+  override def isBinaryCollationString(dt: StringType): Boolean =
+    dt.collationId == CollationFactory.UTF8_BINARY_COLLATION_ID
 }
