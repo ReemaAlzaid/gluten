@@ -342,7 +342,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
 
   void append(std::string_view data) override {
     VELOX_CHECK(!closed(), "File is closed");
-    if (data.size() + currentPart_->size() > minPartSize_) {
+    if (data.size() + currentPart_->size() >= minPartSize_) {
       if (uploadState_.partNumber == 0) {
         createMultipartUploadRequest();
       }
@@ -589,7 +589,11 @@ GlutenS3FileSystem::GlutenS3FileSystem(
     const std::shared_ptr<const velox::config::ConfigBase>& config)
     : S3FileSystem(bucketName, config),
       bucketName_(bucketName),
-      s3Config_(std::make_shared<filesystems::S3Config>(bucketName, config)) {}
+      s3Config_(std::make_shared<filesystems::S3Config>(bucketName, config)) {
+  if (uploadPartAsync()) {
+    writeClient_ = createWriteClient(s3Config_);
+  }
+}
 
 bool GlutenS3FileSystem::uploadPartAsync() const {
   auto value = getS3ConfigValue(
