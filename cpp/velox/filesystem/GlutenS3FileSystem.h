@@ -34,9 +34,7 @@ namespace velox = facebook::velox;
 
 class GlutenS3FileSystem : public velox::filesystems::S3FileSystem {
  public:
-  GlutenS3FileSystem(
-      std::string_view bucketName,
-      const std::shared_ptr<const velox::config::ConfigBase>& config);
+  GlutenS3FileSystem(std::string_view bucketName, const std::shared_ptr<const velox::config::ConfigBase>& config);
 
   std::unique_ptr<velox::WriteFile> openFileForWrite(
       std::string_view s3Path,
@@ -52,8 +50,7 @@ class GlutenS3FileSystem : public velox::filesystems::S3FileSystem {
   std::mutex writeClientMutex_;
 };
 
-void registerGlutenS3FileSystem(
-    velox::filesystems::CacheKeyFn cacheKeyFunc = nullptr);
+void registerGlutenS3FileSystem(velox::filesystems::CacheKeyFn cacheKeyFunc = nullptr);
 
 void finalizeGlutenS3FileSystem();
 

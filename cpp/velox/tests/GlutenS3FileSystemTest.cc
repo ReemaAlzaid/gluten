@@ -55,17 +55,15 @@ TEST(GlutenS3FileSystemTest, registeredFileSystemUsesGlutenSubclass) {
 }
 
 TEST(GlutenS3FileSystemTest, extractsAsyncUploadConfigs) {
-  auto config = std::make_shared<velox::config::ConfigBase>(
-      std::unordered_map<std::string, std::string>{
-          {"spark.gluten.velox.s3UploadPartAsync", "true"},
-          {"spark.gluten.velox.s3MaxConcurrentUploadNum", "8"},
-          {"spark.gluten.velox.s3UploadThreads", "32"}});
+  auto config = std::make_shared<velox::config::ConfigBase>(std::unordered_map<std::string, std::string>{
+      {"spark.gluten.velox.s3UploadPartAsync", "true"},
+      {"spark.gluten.velox.s3MaxConcurrentUploadNum", "8"},
+      {"spark.gluten.velox.s3UploadThreads", "32"}});
 
   const auto hiveConfig = createHiveConnectorConfig(config, FileSystemType::kS3);
 
   EXPECT_EQ(hiveConfig->get<std::string>("hive.s3.part-upload-async"), "true");
-  EXPECT_EQ(
-      hiveConfig->get<std::string>("hive.s3.max-concurrent-upload-num"), "8");
+  EXPECT_EQ(hiveConfig->get<std::string>("hive.s3.max-concurrent-upload-num"), "8");
   EXPECT_EQ(hiveConfig->get<std::string>("hive.s3.upload-threads"), "32");
 }
 

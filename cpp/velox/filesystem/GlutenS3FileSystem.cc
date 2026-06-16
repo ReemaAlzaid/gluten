@@ -18,8 +18,8 @@
 #include "filesystem/GlutenS3FileSystem.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -70,8 +70,7 @@ using namespace facebook::velox::filesystems;
 
 constexpr std::string_view kPartUploadAsync{"part-upload-async"};
 constexpr std::string_view kPartUploadAsyncLegacy{"uploadPartAsync"};
-constexpr std::string_view kMaxConcurrentUploadNum{
-    "max-concurrent-upload-num"};
+constexpr std::string_view kMaxConcurrentUploadNum{"max-concurrent-upload-num"};
 constexpr std::string_view kUploadThreads{"upload-threads"};
 constexpr uint32_t kDefaultMaxConcurrentUploadNum{4};
 constexpr uint32_t kDefaultUploadThreads{16};
@@ -83,9 +82,7 @@ std::string baseS3ConfigKey(std::string_view suffix) {
   return key;
 }
 
-std::string bucketS3ConfigKey(
-    std::string_view bucketName,
-    std::string_view suffix) {
+std::string bucketS3ConfigKey(std::string_view bucketName, std::string_view suffix) {
   std::string key(filesystems::S3Config::kS3BucketPrefix);
   key.append(bucketName);
   key.append(".");
@@ -97,8 +94,7 @@ std::optional<std::string> getS3ConfigValue(
     const std::shared_ptr<const velox::config::ConfigBase>& config,
     std::string_view bucketName,
     std::string_view suffix) {
-  if (auto value =
-          config->get<std::string>(bucketS3ConfigKey(bucketName, suffix))) {
+  if (auto value = config->get<std::string>(bucketS3ConfigKey(bucketName, suffix))) {
     return value;
   }
   return config->get<std::string>(baseS3ConfigKey(suffix));
@@ -126,17 +122,13 @@ uint32_t getUInt32S3Config(
 }
 
 // Supported values are "Always", "RequestDependent", "Never"(default).
-Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy inferPayloadSign(
-    std::string sign) {
-  std::transform(sign.begin(), sign.end(), sign.begin(), [](unsigned char c) {
-    return std::toupper(c);
-  });
+Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy inferPayloadSign(std::string sign) {
+  std::transform(sign.begin(), sign.end(), sign.begin(), [](unsigned char c) { return std::toupper(c); });
   if (sign == "ALWAYS") {
     return Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Always;
   }
   if (sign == "REQUESTDEPENDENT") {
-    return Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::
-        RequestDependent;
+    return Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::RequestDependent;
   }
   return Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never;
 }
@@ -156,8 +148,7 @@ std::optional<std::shared_ptr<Aws::Client::RetryStrategy>> getRetryStrategy(
           0,
           "Invalid configuration: specified 'hive.s3.max-attempts' value {} is < 0.",
           maxAttempts.value());
-      return std::make_shared<Aws::Client::StandardRetryStrategy>(
-          maxAttempts.value());
+      return std::make_shared<Aws::Client::StandardRetryStrategy>(maxAttempts.value());
     }
     return std::make_shared<Aws::Client::StandardRetryStrategy>();
   }
@@ -169,8 +160,7 @@ std::optional<std::shared_ptr<Aws::Client::RetryStrategy>> getRetryStrategy(
           0,
           "Invalid configuration: specified 'hive.s3.max-attempts' value {} is < 0.",
           maxAttempts.value());
-      return std::make_shared<Aws::Client::AdaptiveRetryStrategy>(
-          maxAttempts.value());
+      return std::make_shared<Aws::Client::AdaptiveRetryStrategy>(maxAttempts.value());
     }
     return std::make_shared<Aws::Client::AdaptiveRetryStrategy>();
   }
@@ -182,8 +172,7 @@ std::optional<std::shared_ptr<Aws::Client::RetryStrategy>> getRetryStrategy(
           0,
           "Invalid configuration: specified 'hive.s3.max-attempts' value {} is < 0.",
           maxAttempts.value());
-      return std::make_shared<Aws::Client::DefaultRetryStrategy>(
-          maxAttempts.value());
+      return std::make_shared<Aws::Client::DefaultRetryStrategy>(maxAttempts.value());
     }
     return std::make_shared<Aws::Client::DefaultRetryStrategy>();
   }
@@ -192,8 +181,7 @@ std::optional<std::shared_ptr<Aws::Client::RetryStrategy>> getRetryStrategy(
   return std::nullopt;
 }
 
-std::shared_ptr<Aws::Auth::AWSCredentialsProvider> getCredentialsProvider(
-    const filesystems::S3Config& s3Config) {
+std::shared_ptr<Aws::Auth::AWSCredentialsProvider> getCredentialsProvider(const filesystems::S3Config& s3Config) {
   VELOX_USER_CHECK(
       !s3Config.credentialsProvider().has_value(),
       "Gluten async S3 multipart upload does not support custom AWS credentials providers yet.");
@@ -203,20 +191,17 @@ std::shared_ptr<Aws::Auth::AWSCredentialsProvider> getCredentialsProvider(
   const auto iamRole = s3Config.iamRole();
 
   int keyCount = accessKey.has_value() + secretKey.has_value();
-  VELOX_USER_CHECK(
-      keyCount != 1,
-      "Invalid configuration: both access key and secret key must be specified");
+  VELOX_USER_CHECK(keyCount != 1, "Invalid configuration: both access key and secret key must be specified");
 
-  int configCount = (accessKey.has_value() && secretKey.has_value()) +
-      iamRole.has_value() + s3Config.useInstanceCredentials();
+  int configCount =
+      (accessKey.has_value() && secretKey.has_value()) + iamRole.has_value() + s3Config.useInstanceCredentials();
   VELOX_USER_CHECK(
       configCount <= 1,
       "Invalid configuration: specify only one among 'access/secret keys', 'use instance credentials', 'IAM role'");
 
   if (accessKey.has_value() && secretKey.has_value()) {
     return std::make_shared<Aws::Auth::SimpleAWSCredentialsProvider>(
-        filesystems::awsString(accessKey.value()),
-        filesystems::awsString(secretKey.value()));
+        filesystems::awsString(accessKey.value()), filesystems::awsString(secretKey.value()));
   }
 
   if (s3Config.useInstanceCredentials()) {
@@ -225,22 +210,18 @@ std::shared_ptr<Aws::Auth::AWSCredentialsProvider> getCredentialsProvider(
 
   if (iamRole.has_value()) {
     return std::make_shared<Aws::Auth::STSAssumeRoleCredentialsProvider>(
-        filesystems::awsString(iamRole.value()),
-        filesystems::awsString(s3Config.iamRoleSessionName()));
+        filesystems::awsString(iamRole.value()), filesystems::awsString(s3Config.iamRoleSessionName()));
   }
 
   return std::make_shared<Aws::Auth::DefaultAWSCredentialsProviderChain>();
 }
 
-std::shared_ptr<Aws::S3::S3Client> createWriteClient(
-    const std::shared_ptr<filesystems::S3Config>& s3Config) {
+std::shared_ptr<Aws::S3::S3Client> createWriteClient(const std::shared_ptr<filesystems::S3Config>& s3Config) {
   Aws::Client::ClientConfigurationInitValues initValues;
   initValues.shouldDisableIMDS = !s3Config->useIMDS();
   Aws::S3::S3ClientConfiguration clientConfig(initValues);
-  clientConfig.checksumConfig.requestChecksumCalculation =
-      Aws::Client::RequestChecksumCalculation::WHEN_REQUIRED;
-  clientConfig.checksumConfig.responseChecksumValidation =
-      Aws::Client::ResponseChecksumValidation::WHEN_REQUIRED;
+  clientConfig.checksumConfig.requestChecksumCalculation = Aws::Client::RequestChecksumCalculation::WHEN_REQUIRED;
+  clientConfig.checksumConfig.responseChecksumValidation = Aws::Client::ResponseChecksumValidation::WHEN_REQUIRED;
 
   if (s3Config->endpoint().has_value()) {
     clientConfig.endpointOverride = s3Config->endpoint().value();
@@ -250,38 +231,29 @@ std::shared_ptr<Aws::S3::S3Client> createWriteClient(
   }
   if (s3Config->useProxyFromEnv()) {
     auto proxyConfig =
-        filesystems::S3ProxyConfigurationBuilder(
-            s3Config->endpoint().has_value() ? s3Config->endpoint().value()
-                                             : "")
+        filesystems::S3ProxyConfigurationBuilder(s3Config->endpoint().has_value() ? s3Config->endpoint().value() : "")
             .useSsl(s3Config->useSSL())
             .build();
     if (proxyConfig.has_value()) {
-      clientConfig.proxyScheme = Aws::Http::SchemeMapper::FromString(
-          proxyConfig.value().scheme().c_str());
-      clientConfig.proxyHost =
-          filesystems::awsString(proxyConfig.value().host());
+      clientConfig.proxyScheme = Aws::Http::SchemeMapper::FromString(proxyConfig.value().scheme().c_str());
+      clientConfig.proxyHost = filesystems::awsString(proxyConfig.value().host());
       clientConfig.proxyPort = proxyConfig.value().port();
-      clientConfig.proxyUserName =
-          filesystems::awsString(proxyConfig.value().username());
-      clientConfig.proxyPassword =
-          filesystems::awsString(proxyConfig.value().password());
+      clientConfig.proxyUserName = filesystems::awsString(proxyConfig.value().username());
+      clientConfig.proxyPassword = filesystems::awsString(proxyConfig.value().password());
     }
   }
 
-  clientConfig.scheme = s3Config->useSSL() ? Aws::Http::Scheme::HTTPS
-                                           : Aws::Http::Scheme::HTTP;
+  clientConfig.scheme = s3Config->useSSL() ? Aws::Http::Scheme::HTTPS : Aws::Http::Scheme::HTTP;
 
   if (s3Config->connectTimeout().has_value()) {
-    clientConfig.connectTimeoutMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            velox::config::toDuration(s3Config->connectTimeout().value()))
-            .count();
+    clientConfig.connectTimeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        velox::config::toDuration(s3Config->connectTimeout().value()))
+                                        .count();
   }
   if (s3Config->socketTimeout().has_value()) {
-    clientConfig.requestTimeoutMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            velox::config::toDuration(s3Config->socketTimeout().value()))
-            .count();
+    clientConfig.requestTimeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        velox::config::toDuration(s3Config->socketTimeout().value()))
+                                        .count();
   }
   if (s3Config->maxConnections().has_value()) {
     clientConfig.maxConnections = s3Config->maxConnections().value();
@@ -293,13 +265,10 @@ std::shared_ptr<Aws::S3::S3Client> createWriteClient(
   }
 
   clientConfig.useVirtualAddressing = s3Config->useVirtualAddressing();
-  clientConfig.payloadSigningPolicy =
-      inferPayloadSign(s3Config->payloadSigningPolicy());
+  clientConfig.payloadSigningPolicy = inferPayloadSign(s3Config->payloadSigningPolicy());
 
   return std::make_shared<Aws::S3::S3Client>(
-      getCredentialsProvider(*s3Config),
-      nullptr /* endpointProvider */,
-      clientConfig);
+      getCredentialsProvider(*s3Config), nullptr /* endpointProvider */, clientConfig);
 }
 
 class GlutenS3WriteFile : public velox::WriteFile {
@@ -314,15 +283,12 @@ class GlutenS3WriteFile : public velox::WriteFile {
       : client_(client),
         pool_(pool),
         minPartSize_(minPartSize),
-        uploadThrottle_(
-            std::make_unique<folly::ThrottledLifoSem>(
-                maxConcurrentUploadNum)),
+        uploadThrottle_(std::make_unique<folly::ThrottledLifoSem>(maxConcurrentUploadNum)),
         uploadThreadPool_(uploadThreadPool(uploadThreads)) {
     VELOX_CHECK_NOT_NULL(client_);
     VELOX_CHECK_NOT_NULL(pool_);
     filesystems::getBucketAndKeyFromPath(path, bucket_, key_);
-    currentPart_ =
-        std::make_unique<velox::dwio::common::DataBuffer<char>>(*pool_);
+    currentPart_ = std::make_unique<velox::dwio::common::DataBuffer<char>>(*pool_);
     currentPart_->reserve(minPartSize_);
     ensureObjectDoesNotExist();
     createBucketIfMissing();
@@ -334,8 +300,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
       try {
         waitForAsyncUploads();
       } catch (const std::exception& e) {
-        LOG(ERROR) << "Failed while waiting for S3 async uploads: "
-                   << e.what();
+        LOG(ERROR) << "Failed while waiting for S3 async uploads: " << e.what();
       }
     }
   }
@@ -387,13 +352,11 @@ class GlutenS3WriteFile : public velox::WriteFile {
     Aws::String id;
   };
 
-  static std::shared_ptr<folly::CPUThreadPoolExecutor> uploadThreadPool(
-      uint32_t uploadThreads) {
+  static std::shared_ptr<folly::CPUThreadPoolExecutor> uploadThreadPool(uint32_t uploadThreads) {
     std::lock_guard<std::mutex> l(uploadThreadPoolMutex_);
     if (!sharedUploadThreadPool_) {
       sharedUploadThreadPool_ = std::make_shared<folly::CPUThreadPoolExecutor>(
-          uploadThreads,
-          std::make_shared<folly::NamedThreadFactory>("s3-upload-thread"));
+          uploadThreads, std::make_shared<folly::NamedThreadFactory>("s3-upload-thread"));
     }
     return sharedUploadThreadPool_;
   }
@@ -411,14 +374,8 @@ class GlutenS3WriteFile : public velox::WriteFile {
     if (!objectMetadata.IsSuccess()) {
       RECORD_METRIC_VALUE(filesystems::kMetricS3GetMetadataErrors);
     }
-    RECORD_METRIC_VALUE(
-        filesystems::kMetricS3GetObjectRetries,
-        objectMetadata.GetRetryCount());
-    VELOX_CHECK(
-        !objectMetadata.IsSuccess(),
-        "S3 object already exists: bucket={}, key={}",
-        bucket_,
-        key_);
+    RECORD_METRIC_VALUE(filesystems::kMetricS3GetObjectRetries, objectMetadata.GetRetryCount());
+    VELOX_CHECK(!objectMetadata.IsSuccess(), "S3 object already exists: bucket={}, key={}", bucket_, key_);
   }
 
   void createBucketIfMissing() {
@@ -432,8 +389,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
     Aws::S3::Model::CreateBucketRequest createRequest;
     createRequest.SetBucket(filesystems::awsString(bucket_));
     auto outcome = client_->CreateBucket(createRequest);
-    VELOX_CHECK_AWS_OUTCOME(
-        outcome, "Failed to create S3 bucket", bucket_, "");
+    VELOX_CHECK_AWS_OUTCOME(outcome, "Failed to create S3 bucket", bucket_, "");
   }
 
   void createMultipartUploadRequest() {
@@ -442,8 +398,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
     request.SetKey(filesystems::awsString(key_));
     request.SetContentType(kApplicationOctetStream);
     auto outcome = client_->CreateMultipartUpload(request);
-    VELOX_CHECK_AWS_OUTCOME(
-        outcome, "Failed initiating multiple part upload", bucket_, key_);
+    VELOX_CHECK_AWS_OUTCOME(outcome, "Failed initiating multiple part upload", bucket_, key_);
     uploadState_.id = outcome.GetResult().GetUploadId();
   }
 
@@ -453,8 +408,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
     request.SetKey(filesystems::awsString(key_));
     request.SetContentType(kApplicationOctetStream);
     request.SetContentLength(currentPart_->size());
-    request.SetBody(std::make_shared<filesystems::StringViewStream>(
-        currentPart_->data(), currentPart_->size()));
+    request.SetBody(std::make_shared<filesystems::StringViewStream>(currentPart_->data(), currentPart_->size()));
     RECORD_METRIC_VALUE(filesystems::kMetricS3StartedUploads);
     auto outcome = client_->PutObject(request);
     if (outcome.IsSuccess()) {
@@ -462,8 +416,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
     } else {
       RECORD_METRIC_VALUE(filesystems::kMetricS3FailedUploads);
     }
-    VELOX_CHECK_AWS_OUTCOME(
-        outcome, "Failed single object upload", bucket_, key_);
+    VELOX_CHECK_AWS_OUTCOME(outcome, "Failed single object upload", bucket_, key_);
   }
 
   void completeMultipartUpload() {
@@ -481,8 +434,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
     } else {
       RECORD_METRIC_VALUE(filesystems::kMetricS3FailedUploads);
     }
-    VELOX_CHECK_AWS_OUTCOME(
-        outcome, "Failed to complete multiple part upload", bucket_, key_);
+    VELOX_CHECK_AWS_OUTCOME(outcome, "Failed to complete multiple part upload", bucket_, key_);
   }
 
   void upload(std::string_view data) {
@@ -507,9 +459,8 @@ class GlutenS3WriteFile : public velox::WriteFile {
     const int64_t partNumber = ++uploadState_.partNumber;
     auto uploadId = uploadState_.id;
     auto partData = std::make_shared<std::string>(part.data(), part.size());
-    uploadFutures_.emplace_back(folly::via(
-        uploadThreadPool_.get(),
-        [this, uploadId, partNumber, partData = std::move(partData)]() {
+    uploadFutures_.emplace_back(
+        folly::via(uploadThreadPool_.get(), [this, uploadId, partNumber, partData = std::move(partData)]() {
           SCOPE_EXIT {
             uploadThrottle_->post();
           };
@@ -517,18 +468,14 @@ class GlutenS3WriteFile : public velox::WriteFile {
         }));
   }
 
-  Aws::S3::Model::CompletedPart uploadPartSeq(
-      const Aws::String& uploadId,
-      int64_t partNumber,
-      std::string_view part) {
+  Aws::S3::Model::CompletedPart uploadPartSeq(const Aws::String& uploadId, int64_t partNumber, std::string_view part) {
     Aws::S3::Model::UploadPartRequest request;
     request.SetBucket(filesystems::awsString(bucket_));
     request.SetKey(filesystems::awsString(key_));
     request.SetUploadId(uploadId);
     request.SetPartNumber(partNumber);
     request.SetContentLength(part.size());
-    request.SetBody(std::make_shared<filesystems::StringViewStream>(
-        part.data(), part.size()));
+    request.SetBody(std::make_shared<filesystems::StringViewStream>(part.data(), part.size()));
     auto outcome = client_->UploadPart(request);
     VELOX_CHECK_AWS_OUTCOME(outcome, "Failed to upload", bucket_, key_);
 
@@ -555,9 +502,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
     std::sort(
         uploadState_.completedParts.begin(),
         uploadState_.completedParts.end(),
-        [](const auto& left, const auto& right) {
-          return left.GetPartNumber() < right.GetPartNumber();
-        });
+        [](const auto& left, const auto& right) { return left.GetPartNumber() < right.GetPartNumber(); });
   }
 
   Aws::S3::S3Client* const client_;
@@ -571,8 +516,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
   std::unique_ptr<folly::ThrottledLifoSem> uploadThrottle_;
   std::shared_ptr<folly::CPUThreadPoolExecutor> uploadThreadPool_;
   std::vector<folly::Future<Aws::S3::Model::CompletedPart>> uploadFutures_;
-  inline static std::shared_ptr<folly::CPUThreadPoolExecutor>
-      sharedUploadThreadPool_;
+  inline static std::shared_ptr<folly::CPUThreadPoolExecutor> sharedUploadThreadPool_;
   inline static std::mutex uploadThreadPoolMutex_;
 };
 
@@ -596,8 +540,7 @@ GlutenS3FileSystem::GlutenS3FileSystem(
 }
 
 bool GlutenS3FileSystem::uploadPartAsync() const {
-  auto value = getS3ConfigValue(
-      config_, bucketName_, kPartUploadAsync, kPartUploadAsyncLegacy);
+  auto value = getS3ConfigValue(config_, bucketName_, kPartUploadAsync, kPartUploadAsyncLegacy);
   return value.has_value() && folly::to<bool>(value.value());
 }
 
@@ -617,35 +560,20 @@ std::unique_ptr<velox::WriteFile> GlutenS3FileSystem::openFileForWrite(
   }
 
   VELOX_CHECK_NOT_NULL(options.pool);
-  const auto maxConcurrentUploadNum = getUInt32S3Config(
-      config_,
-      bucketName_,
-      kMaxConcurrentUploadNum,
-      kDefaultMaxConcurrentUploadNum);
-  const auto uploadThreads = getUInt32S3Config(
-      config_, bucketName_, kUploadThreads, kDefaultUploadThreads);
+  const auto maxConcurrentUploadNum =
+      getUInt32S3Config(config_, bucketName_, kMaxConcurrentUploadNum, kDefaultMaxConcurrentUploadNum);
+  const auto uploadThreads = getUInt32S3Config(config_, bucketName_, kUploadThreads, kDefaultUploadThreads);
   VELOX_USER_CHECK_GT(
-      maxConcurrentUploadNum,
-      0,
-      "The hive.s3.max-concurrent-upload-num S3 configuration must be greater than 0.");
-  VELOX_USER_CHECK_GT(
-      uploadThreads,
-      0,
-      "The hive.s3.upload-threads S3 configuration must be greater than 0.");
+      maxConcurrentUploadNum, 0, "The hive.s3.max-concurrent-upload-num S3 configuration must be greater than 0.");
+  VELOX_USER_CHECK_GT(uploadThreads, 0, "The hive.s3.upload-threads S3 configuration must be greater than 0.");
 
   const auto path = filesystems::getPath(s3Path);
   return std::make_unique<GlutenS3WriteFile>(
-      path,
-      writeClient(),
-      options.pool,
-      s3Config_->minPartSize(),
-      maxConcurrentUploadNum,
-      uploadThreads);
+      path, writeClient(), options.pool, s3Config_->minPartSize(), maxConcurrentUploadNum, uploadThreads);
 }
 
 void registerGlutenS3FileSystem(filesystems::CacheKeyFn cacheKeyFunc) {
-  filesystems::registerS3FileSystem(
-      std::move(cacheKeyFunc), glutenS3FileSystemFactory);
+  filesystems::registerS3FileSystem(std::move(cacheKeyFunc), glutenS3FileSystemFactory);
 }
 
 void finalizeGlutenS3FileSystem() {
