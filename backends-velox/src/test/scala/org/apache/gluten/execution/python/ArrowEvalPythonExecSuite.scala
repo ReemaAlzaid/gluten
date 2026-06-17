@@ -21,6 +21,8 @@ import org.apache.gluten.execution.WholeStageTransformerSuite
 import org.apache.spark.SparkConf
 import org.apache.spark.api.python.ColumnarArrowEvalPythonExec
 import org.apache.spark.sql.IntegratedUDFTestUtils
+import org.apache.spark.sql.execution.python.UserDefinedPythonFunction
+import org.apache.spark.sql.functions.max
 import org.apache.spark.sql.types.{DataType, LongType, StringType}
 import org.apache.spark.util.SparkVersionUtil
 
@@ -36,6 +38,9 @@ class ArrowEvalPythonExecSuite extends WholeStageTransformerSuite {
     newTestScalarPandasUDF(name = "pyarrowUDF", returnType = Some(StringType))
   private val pyarrowTestUDFLong =
     newTestScalarPandasUDF(name = "pyarrowUDF", returnType = Some(LongType))
+  private val SQL_ARROW_BATCHED_UDF = 101
+  private lazy val arrowBatchedTestUDFString =
+    newTestArrowBatchedPythonUDF(name = "arrowBatchedUDF", returnType = Some(StringType))
 
   override def sparkConf: SparkConf = {
     super.sparkConf
@@ -107,6 +112,52 @@ class ArrowEvalPythonExecSuite extends WholeStageTransformerSuite {
       .withColumn("p_a", pyarrowTestUDFString(base("a")))
       .withColumn("p_b", pyarrowTestUDFLong(base("b") * 2))
     checkAnswer(df, expected)
+  }
+
+  testWithMinSparkVersion("arrow batched python udf over parquet scan", "4.0") {
+    withTempPath {
+      f =>
+        Seq(("MAIL", 1), ("RAIL", 2), ("SHIP", 3)).toDF("shipmode", "id").write.parquet(
+          f.getCanonicalPath)
+        val base = spark.read.parquet(f.getCanonicalPath)
+        val arrowUdfCol = arrowBatchedTestUDFString(base("shipmode")).as("shipmode_arrow")
+        val df = base.select(arrowUdfCol).agg(max("shipmode_arrow").as("max_shipmode"))
+        val expected = Seq(Tuple1("SHIP")).toDF("max_shipmode")
+
+        checkSparkPlan[ColumnarArrowEvalPythonExec](df)
+        checkAnswer(df, expected)
+    }
+  }
+
+  private def newTestArrowBatchedPythonUDF(
+      name: String,
+      returnType: Option[DataType] = None): UserDefinedPythonFunction = {
+    val regularPythonUDF = newTestPythonUDF(name, returnType)
+    val regularUDF = regularPythonUDF.getClass
+      .getMethod("udf")
+      .invoke(regularPythonUDF)
+      .asInstanceOf[UserDefinedPythonFunction]
+    regularUDF.copy(
+      regularUDF.name,
+      regularUDF.func,
+      regularUDF.dataType,
+      SQL_ARROW_BATCHED_UDF,
+      regularUDF.udfDeterministic)
+  }
+
+  private def newTestPythonUDF(
+      name: String,
+      returnType: Option[DataType] = None): TestPythonUDF = {
+    if (SparkVersionUtil.gteSpark40) {
+      // After https://github.com/apache/spark/pull/42864 which landed in Spark 4.0, the return
+      // type of the UDF must be explicitly specified when creating the UDF instance with column
+      // expressions as parameter.
+      classOf[TestPythonUDF]
+        .getConstructor(classOf[String], classOf[Option[DataType]])
+        .newInstance(name, returnType)
+    } else {
+      TestPythonUDF(name)
+    }
   }
 
   private def newTestScalarPandasUDF(
