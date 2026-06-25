@@ -54,30 +54,58 @@ case class CudfNodeValidationRule(glutenConf: GlutenConfig) extends Rule[SparkPl
 
 object CudfNodeValidationRule {
   def setTagForWholeStageTransformer(transformer: WholeStageTransformer): Unit = {
-    if (!VeloxConfig.get.cudfEnableTableScan) {
-      // Spark3.2 does not have exists
-      val hasLeaf = transformer.find {
-        case _: LeafTransformSupport => true
-        case _ => false
-      }.isDefined
-      if (!hasLeaf && VeloxConfig.get.cudfEnableValidation) {
-        if (
-          VeloxCudfPlanValidatorJniWrapper.validate(
-            transformer.substraitPlan.toProtobuf.toByteArray)
-        ) {
-          transformer.foreach {
-            case _: LeafTransformSupport =>
-            case t: TransformSupport =>
-              t.setTagValue(CudfTag.CudfTag, true)
-            case _ =>
-          }
-          transformer.setTagValue(CudfTag.CudfTag, true)
-        }
-      } else {
-        transformer.setTagValue(CudfTag.CudfTag, !hasLeaf)
+    // Spark 3.2 does not have TreeNode.exists, so use find(...).isDefined.
+    val hasLeaf = transformer.find {
+      case _: LeafTransformSupport => true
+      case _ => false
+    }.isDefined
+
+    val canOffload = decideOffload(
+      hasLeaf,
+      VeloxConfig.get.cudfEnableTableScan,
+      VeloxConfig.get.cudfEnableValidation,
+      () =>
+        VeloxCudfPlanValidatorJniWrapper.validate(
+          transformer.substraitPlan.toProtobuf.toByteArray))
+
+    if (canOffload) {
+      transformer.foreach {
+        case _: LeafTransformSupport =>
+        case t: TransformSupport =>
+          t.setTagValue(CudfTag.CudfTag, true)
+        case _ =>
       }
-    } else {
       transformer.setTagValue(CudfTag.CudfTag, true)
+    } else {
+      transformer.setTagValue(CudfTag.CudfTag, false)
+    }
+  }
+
+  /**
+   * Decide whether a whole-stage transformer can be offloaded to the cuDF GPU backend.
+   *
+   * Pure (no native calls) so the branching can be unit-tested:
+   *   - a stage that reads a table is offloadable only when GPU table scan is enabled;
+   *   - otherwise, when validation is enabled, the native validator decides (it exempts
+   *     TableScan, so a scan-bearing stage passes only when every other operator is
+   *     cuDF-capable);
+   *   - when validation is disabled, the stage is offloaded optimistically.
+   *
+   * `validate` is invoked only on the validation path, never when a table-reading stage is
+   * rejected up front, so the previous "tag GPU unconditionally when table scan is enabled"
+   * behavior no longer skips validation.
+   */
+  private[extension] def decideOffload(
+      hasLeaf: Boolean,
+      enableTableScan: Boolean,
+      enableValidation: Boolean,
+      validate: () => Boolean): Boolean = {
+    if (hasLeaf && !enableTableScan) {
+      false
+    } else if (!enableValidation) {
+      true
+    } else {
+      validate()
     }
   }
 
