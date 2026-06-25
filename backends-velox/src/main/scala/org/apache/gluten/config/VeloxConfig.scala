@@ -97,6 +97,10 @@ class VeloxConfig(conf: SQLConf) extends GlutenConfig(conf) {
 
   def cudfShuffleMaxPrefetchBytes: Long = getConf(CUDF_SHUFFLE_MAX_PREFETCH_BYTES)
 
+  def cudfLogFallback: Boolean = getConf(CUDF_LOG_FALLBACK)
+
+  def cudfFailOnFallback: Boolean = getConf(CUDF_FAIL_ON_FALLBACK)
+
   def orcUseColumnNames: Boolean = getConf(ORC_USE_COLUMN_NAMES) &&
     !conf.getConfString(GlutenConfig.SPARK_ORC_FORCE_POSITIONAL_EVOLUTION, "false").toBoolean
 
@@ -776,6 +780,21 @@ object VeloxConfig extends ConfigRegistry {
         " for GPU available.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefaultString("1028MB")
+
+  val CUDF_LOG_FALLBACK =
+    buildConf("spark.gluten.sql.columnar.backend.velox.cudf.logFallback")
+      .doc("When true, log the reason a whole-stage could not be offloaded to the cuDF GPU " +
+        "backend (which operator(s) forced CPU fallback). Useful for diagnosing GPU coverage.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val CUDF_FAIL_ON_FALLBACK =
+    buildConf("spark.gluten.sql.columnar.backend.velox.cudf.failOnFallback")
+      .doc("When true, throw instead of silently falling back to CPU when a whole-stage that " +
+        "was a candidate for cuDF GPU offload fails validation. Intended for tests/CI to catch " +
+        "GPU-offload regressions; should remain false in production.")
+      .booleanConf
+      .createWithDefault(false)
 
   val MEMORY_DUMP_ON_EXIT =
     buildConf("spark.gluten.monitor.memoryDumpOnExit")

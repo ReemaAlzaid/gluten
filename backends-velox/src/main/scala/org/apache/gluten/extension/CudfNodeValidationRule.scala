@@ -22,6 +22,7 @@ import org.apache.gluten.exception.GlutenNotSupportException
 import org.apache.gluten.execution._
 import org.apache.gluten.extension.CudfNodeValidationRule.{createGPUColumnarExchange, setTagForWholeStageTransformer}
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.{ColumnarShuffleExchangeExec, GPUColumnarShuffleExchangeExec, SparkPlan}
 
@@ -52,7 +53,7 @@ case class CudfNodeValidationRule(glutenConf: GlutenConfig) extends Rule[SparkPl
   }
 }
 
-object CudfNodeValidationRule {
+object CudfNodeValidationRule extends Logging {
   def setTagForWholeStageTransformer(transformer: WholeStageTransformer): Unit = {
     // Spark 3.2 does not have TreeNode.exists, so use find(...).isDefined.
     val hasLeaf = transformer.find {
@@ -72,12 +73,16 @@ object CudfNodeValidationRule {
     // operator is cuDF-capable. Skipping validation (the previous behavior when
     // cudfEnableTableScan was true) could tag a stage that contains an unsupported
     // operator, which then crashes at runtime or silently relies on CPU fallback.
-    val canOffload =
+    // validateWithReason returns "" when the whole stage can run on GPU, otherwise a
+    // description of the operator(s) that forced CPU fallback.
+    val fallbackReason =
       if (VeloxConfig.get.cudfEnableValidation) {
-        VeloxCudfPlanValidatorJniWrapper.validate(transformer.substraitPlan.toProtobuf.toByteArray)
+        VeloxCudfPlanValidatorJniWrapper.validateWithReason(
+          transformer.substraitPlan.toProtobuf.toByteArray)
       } else {
-        true
+        ""
       }
+    val canOffload = fallbackReason == null || fallbackReason.isEmpty
 
     if (canOffload) {
       transformer.foreach {
@@ -89,6 +94,13 @@ object CudfNodeValidationRule {
       transformer.setTagValue(CudfTag.CudfTag, true)
     } else {
       transformer.setTagValue(CudfTag.CudfTag, false)
+      if (VeloxConfig.get.cudfLogFallback) {
+        logWarning(s"cuDF GPU offload skipped for a whole-stage transformer: $fallbackReason")
+      }
+      if (VeloxConfig.get.cudfFailOnFallback) {
+        throw new GlutenNotSupportException(
+          s"cuDF GPU offload required but unavailable: $fallbackReason")
+      }
     }
   }
 

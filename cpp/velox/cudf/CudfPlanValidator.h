@@ -20,10 +20,17 @@
 #include "memory/VeloxMemoryManager.h"
 #include "substrait/plan.pb.h"
 
+#include <string>
+
 namespace gluten {
 class CudfPlanValidator {
  public:
   // Validate if the plan contains cudf unsupported operator except TableScan and ValueStream.
   static bool validate(const ::substrait::Plan& substraitPlan);
+
+  // Same as validate(), but on failure fills `fallbackReason` with a human-readable
+  // description of the operator(s) that prevented GPU offload. `fallbackReason` is
+  // cleared on success.
+  static bool validate(const ::substrait::Plan& substraitPlan, std::string& fallbackReason);
 };
 } // namespace gluten

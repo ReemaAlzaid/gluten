@@ -17,6 +17,9 @@
  */
 
 #include "CudfPlanValidator.h"
+
+#include <algorithm>
+
 #include "compute/ResultIterator.h"
 #include "compute/VeloxBackend.h"
 #include "compute/VeloxPlanConverter.h"
@@ -40,6 +43,12 @@ bool isCudfOperator(const exec::Operator* op) {
 } // namespace
 
 bool CudfPlanValidator::validate(const ::substrait::Plan& substraitPlan) {
+  std::string fallbackReason;
+  return validate(substraitPlan, fallbackReason);
+}
+
+bool CudfPlanValidator::validate(const ::substrait::Plan& substraitPlan, std::string& fallbackReason) {
+  fallbackReason.clear();
   auto veloxMemoryPool = gluten::defaultLeafVeloxMemoryPool();
   std::vector<::substrait::ReadRel_LocalFiles> localFiles;
   std::unordered_map<std::string, std::string> configValues;
@@ -70,6 +79,7 @@ bool CudfPlanValidator::validate(const ::substrait::Plan& substraitPlan) {
       velox::exec::Task::ExecutionMode::kSerial);
   std::vector<velox::exec::Operator*> operators;
   task->testingVisitDrivers([&](velox::exec::Driver* driver) { operators = driver->operators(); });
+  std::vector<std::string> unsupported;
   for (const auto* op : operators) {
     if (dynamic_cast<const velox::exec::TableScan*>(op) != nullptr) {
       continue;
@@ -77,11 +87,22 @@ bool CudfPlanValidator::validate(const ::substrait::Plan& substraitPlan) {
     if (isCudfOperator(op)) {
       continue;
     }
-    LOG(INFO) << "Operator " << op->operatorType() << " is not supported in cudf";
-    task->requestCancel().wait();
-    return false;
+    // Avoid reporting the same operator type twice.
+    const auto type = op->operatorType();
+    if (std::find(unsupported.begin(), unsupported.end(), type) == unsupported.end()) {
+      unsupported.push_back(type);
+    }
   }
   task->requestCancel().wait();
+  if (!unsupported.empty()) {
+    std::string joined;
+    for (size_t i = 0; i < unsupported.size(); ++i) {
+      joined += (i == 0 ? "" : ", ") + unsupported[i];
+    }
+    fallbackReason = "cuDF cannot offload operator(s): " + joined;
+    LOG(INFO) << "Cudf Operator validation failed: " << fallbackReason;
+    return false;
+  }
   LOG(INFO) << "Cudf Operator validation success";
   return true;
 }

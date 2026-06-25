@@ -865,6 +865,23 @@ JNIEXPORT jboolean JNICALL Java_org_apache_gluten_cudf_VeloxCudfPlanValidatorJni
   return CudfPlanValidator::validate(substraitPlan);
   JNI_METHOD_END(false)
 }
+
+JNIEXPORT jstring JNICALL Java_org_apache_gluten_cudf_VeloxCudfPlanValidatorJniWrapper_validateWithReason( // NOLINT
+    JNIEnv* env,
+    jclass,
+    jbyteArray planArr) {
+  JNI_METHOD_START
+  auto safePlanArray = getByteArrayElementsSafe(env, planArr);
+  auto planSize = env->GetArrayLength(planArr);
+  ::substrait::Plan substraitPlan;
+  parseProtobuf(safePlanArray.elems(), planSize, &substraitPlan);
+  // Returns an empty string when the whole stage can be offloaded to GPU, otherwise a
+  // human-readable description of the operator(s) that forced CPU fallback.
+  std::string fallbackReason;
+  CudfPlanValidator::validate(substraitPlan, fallbackReason);
+  return env->NewStringUTF(fallbackReason.c_str());
+  JNI_METHOD_END(nullptr)
+}
 #endif
 
 #ifdef GLUTEN_ENABLE_ENHANCED_FEATURES

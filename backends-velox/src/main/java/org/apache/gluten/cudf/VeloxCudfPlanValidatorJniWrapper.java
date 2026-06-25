@@ -19,4 +19,12 @@ package org.apache.gluten.cudf;
 /** The jni file is at `cpp/core/jni/VeloxJniWrapper.cc` */
 public class VeloxCudfPlanValidatorJniWrapper {
   public static native boolean validate(byte[] wsPlan);
+
+  /**
+   * Validate a whole-stage plan for GPU (cuDF) offload, returning the reason it cannot be offloaded.
+   *
+   * @return an empty string if the whole stage can run on GPU, otherwise a human-readable
+   *     description of the operator(s) that forced CPU fallback.
+   */
+  public static native String validateWithReason(byte[] wsPlan);
 }
