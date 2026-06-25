@@ -54,30 +54,41 @@ case class CudfNodeValidationRule(glutenConf: GlutenConfig) extends Rule[SparkPl
 
 object CudfNodeValidationRule {
   def setTagForWholeStageTransformer(transformer: WholeStageTransformer): Unit = {
-    if (!VeloxConfig.get.cudfEnableTableScan) {
-      // Spark3.2 does not have exists
-      val hasLeaf = transformer.find {
-        case _: LeafTransformSupport => true
-        case _ => false
-      }.isDefined
-      if (!hasLeaf && VeloxConfig.get.cudfEnableValidation) {
-        if (
-          VeloxCudfPlanValidatorJniWrapper.validate(
-            transformer.substraitPlan.toProtobuf.toByteArray)
-        ) {
-          transformer.foreach {
-            case _: LeafTransformSupport =>
-            case t: TransformSupport =>
-              t.setTagValue(CudfTag.CudfTag, true)
-            case _ =>
-          }
-          transformer.setTagValue(CudfTag.CudfTag, true)
-        }
+    // Spark 3.2 does not have TreeNode.exists, so use find(...).isDefined.
+    val hasLeaf = transformer.find {
+      case _: LeafTransformSupport => true
+      case _ => false
+    }.isDefined
+
+    // A whole-stage that reads a table can only run on GPU when GPU table scan is
+    // enabled; otherwise the leaf scan stays on CPU and the stage is not offloaded.
+    if (hasLeaf && !VeloxConfig.get.cudfEnableTableScan) {
+      transformer.setTagValue(CudfTag.CudfTag, false)
+      return
+    }
+
+    // Validate the stage natively before tagging it for GPU. The native validator
+    // exempts TableScan, so a scan-bearing stage is accepted only when every other
+    // operator is cuDF-capable. Skipping validation (the previous behavior when
+    // cudfEnableTableScan was true) could tag a stage that contains an unsupported
+    // operator, which then crashes at runtime or silently relies on CPU fallback.
+    val canOffload =
+      if (VeloxConfig.get.cudfEnableValidation) {
+        VeloxCudfPlanValidatorJniWrapper.validate(transformer.substraitPlan.toProtobuf.toByteArray)
       } else {
-        transformer.setTagValue(CudfTag.CudfTag, !hasLeaf)
+        true
       }
-    } else {
+
+    if (canOffload) {
+      transformer.foreach {
+        case _: LeafTransformSupport =>
+        case t: TransformSupport =>
+          t.setTagValue(CudfTag.CudfTag, true)
+        case _ =>
+      }
       transformer.setTagValue(CudfTag.CudfTag, true)
+    } else {
+      transformer.setTagValue(CudfTag.CudfTag, false)
     }
   }
 
