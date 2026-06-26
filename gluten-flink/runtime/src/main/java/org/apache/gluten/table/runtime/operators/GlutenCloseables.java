@@ -14,21 +14,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.spark.util
+package org.apache.gluten.table.runtime.operators;
 
-object SparkShutdownManagerUtil {
-  private val LIB_UNLOADING_PRIORITY = ShutdownHookManager.SPARK_CONTEXT_SHUTDOWN_PRIORITY - 1
-  assert(LIB_UNLOADING_PRIORITY > ShutdownHookManager.TEMP_DIR_SHUTDOWN_PRIORITY)
+final class GlutenCloseables {
 
-  def addHook(hook: () => Unit): AnyRef = {
-    ShutdownHookManager.addShutdownHook(ShutdownHookManager.DEFAULT_SHUTDOWN_PRIORITY)(hook)
+  private GlutenCloseables() {}
+
+  static void runWithCleanup(CloseAction... actions) throws Exception {
+    Exception failure = null;
+    for (CloseAction action : actions) {
+      try {
+        action.close();
+      } catch (Exception e) {
+        if (failure == null) {
+          failure = e;
+        } else {
+          failure.addSuppressed(e);
+        }
+      }
+    }
+    if (failure != null) {
+      throw failure;
+    }
   }
 
-  def addHookForLibUnloading(hook: () => Unit): AnyRef = {
-    ShutdownHookManager.addShutdownHook(LIB_UNLOADING_PRIORITY)(hook)
-  }
-
-  def addHookForTempDirRemoval(hook: () => Unit): AnyRef = {
-    ShutdownHookManager.addShutdownHook(ShutdownHookManager.TEMP_DIR_SHUTDOWN_PRIORITY)(hook)
+  interface CloseAction {
+    void close() throws Exception;
   }
 }
