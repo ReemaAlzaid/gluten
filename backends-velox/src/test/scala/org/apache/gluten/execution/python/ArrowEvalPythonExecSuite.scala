@@ -38,7 +38,7 @@ class ArrowEvalPythonExecSuite extends WholeStageTransformerSuite {
     newTestScalarPandasUDF(name = "pyarrowUDF", returnType = Some(StringType))
   private val pyarrowTestUDFLong =
     newTestScalarPandasUDF(name = "pyarrowUDF", returnType = Some(LongType))
-  private val SQL_ARROW_BATCHED_UDF = 101
+  private val SQL_ARROW_BATCHED_UDF = org.apache.spark.api.python.PythonEvalType.SQL_ARROW_BATCHED_UDF
   private lazy val arrowBatchedTestUDFString =
     newTestArrowBatchedPythonUDF(name = "arrowBatchedUDF", returnType = Some(StringType))
 
