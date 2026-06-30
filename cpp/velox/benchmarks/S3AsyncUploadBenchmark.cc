@@ -15,11 +15,11 @@
  * limitations under the License.
  */
 
-#include <folly/Benchmark.h>
-#include <folly/init/Init.h>
+#include <benchmark/benchmark.h>
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <memory>
@@ -128,8 +128,8 @@ class S3AsyncUploadBenchmark {
     filesystems::finalizeS3();
   }
 
-  void run(const std::string& name, bool enableUploadPartAsync, int32_t sizeMiB) {
-    folly::BenchmarkSuspender suspender;
+  void run(::benchmark::State& state, std::string_view name, bool enableUploadPartAsync, int32_t sizeMiB) {
+    state.PauseTiming();
     const auto sequence = sequence_.fetch_add(1);
     const auto key = fmt::format("{}/{}_{}MiB_{}_{}.bin", objectPrefix_, name, sizeMiB, runId_, sequence);
     const auto s3File = fmt::format("s3://{}/{}", bucket_, key);
@@ -137,7 +137,7 @@ class S3AsyncUploadBenchmark {
     GlutenS3FileSystem s3fs(bucket_, config);
     std::string data(1024 * 1024, 'a');
 
-    suspender.dismiss();
+    state.ResumeTiming();
     auto pool = memory::memoryManager()->addLeafPool(fmt::format("S3AsyncUploadBenchmark-{}", sequence));
     filesystems::FileOptions options;
     options.pool = pool.get();
@@ -146,7 +146,7 @@ class S3AsyncUploadBenchmark {
       writeFile->append(data);
     }
     writeFile->close();
-    folly::doNotOptimizeAway(writeFile->size());
+    ::benchmark::DoNotOptimize(writeFile->size());
     VELOX_CHECK_EQ(writeFile->size(), static_cast<uint64_t>(sizeMiB) * 1024 * 1024);
   }
 
@@ -195,40 +195,51 @@ class S3AsyncUploadBenchmark {
   std::atomic<uint64_t> sequence_{0};
 };
 
-std::unique_ptr<S3AsyncUploadBenchmark> benchmark;
+std::unique_ptr<S3AsyncUploadBenchmark> s3Benchmark;
 
-#define DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(size)                                    \
-  BENCHMARK(sync_upload_##size##M) { benchmark->run("sync_upload", false, size); } \
-  BENCHMARK_RELATIVE(async_upload_##size##M) { benchmark->run("async_upload", true, size); }
+void runS3AsyncUploadBenchmark(::benchmark::State& state, bool enableUploadPartAsync, int32_t sizeMiB) {
+  const auto name = enableUploadPartAsync ? "async_upload" : "sync_upload";
+  for (auto _ : state) {
+    s3Benchmark->run(state, name, enableUploadPartAsync, sizeMiB);
+  }
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * sizeMiB * 1024 * 1024);
+}
 
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(4)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(8)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(16)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(32)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(64)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(128)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(256)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(512)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(1024)
-DEFINE_S3_ASYNC_UPLOAD_BENCHMARKS(2048)
+#define REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(size)                                                                    \
+  BENCHMARK_CAPTURE(runS3AsyncUploadBenchmark, sync_upload_##size##M, false, size)->Unit(::benchmark::kMillisecond); \
+  BENCHMARK_CAPTURE(runS3AsyncUploadBenchmark, async_upload_##size##M, true, size)->Unit(::benchmark::kMillisecond)
+
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(4);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(8);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(16);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(32);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(64);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(128);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(256);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(512);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(1024);
+REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS(2048);
+
+#undef REGISTER_S3_ASYNC_UPLOAD_BENCHMARKS
 
 } // namespace
 
 void initializeS3AsyncUploadBenchmark() {
-  benchmark = std::make_unique<S3AsyncUploadBenchmark>();
+  s3Benchmark = std::make_unique<S3AsyncUploadBenchmark>();
 }
 
 void finalizeS3AsyncUploadBenchmark() {
-  benchmark.reset();
+  s3Benchmark.reset();
 }
 
 } // namespace gluten
 
 int main(int argc, char** argv) {
-  folly::Init init{&argc, &argv};
   facebook::velox::memory::MemoryManager::initialize(facebook::velox::memory::MemoryManager::Options{});
   gluten::initializeS3AsyncUploadBenchmark();
-  folly::runBenchmarks();
+  ::benchmark::Initialize(&argc, argv);
+  ::benchmark::RunSpecifiedBenchmarks();
+  ::benchmark::Shutdown();
   gluten::finalizeS3AsyncUploadBenchmark();
   return 0;
 }
