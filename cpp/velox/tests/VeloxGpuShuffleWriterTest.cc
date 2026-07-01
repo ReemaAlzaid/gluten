@@ -19,7 +19,8 @@
 #include <arrow/io/api.h>
 
 #include "config/GlutenConfig.h"
-#include "memory/GpuBufferColumnarBatch.h"
+#include "jni/JniHashTable.h"
+#include "substrait/algebra.pb.h"
 #include "shuffle/VeloxGpuShuffleWriter.h"
 #include "shuffle/VeloxHashShuffleWriter.h"
 #include "tests/VeloxShuffleWriterTestBase.h"
@@ -54,6 +55,23 @@ class ColumnarBatchArray : public ColumnarBatchIterator {
 
  private:
   const std::vector<std::shared_ptr<GpuBufferColumnarBatch>> batches_;
+  int32_t cursor_ = 0;
+};
+
+class GenericColumnarBatchArray : public ColumnarBatchIterator {
+ public:
+  explicit GenericColumnarBatchArray(const std::vector<std::shared_ptr<ColumnarBatch>> batches)
+      : batches_(std::move(batches)) {}
+
+  std::shared_ptr<ColumnarBatch> next() override {
+    if (cursor_ >= batches_.size()) {
+      return nullptr;
+    }
+    return batches_[cursor_++];
+  }
+
+ private:
+  const std::vector<std::shared_ptr<ColumnarBatch>> batches_;
   int32_t cursor_ = 0;
 };
 
@@ -111,6 +129,24 @@ RowVectorPtr mergeRowVectors(const std::vector<RowVectorPtr>& sources) {
   return result;
 }
 
+std::shared_ptr<VeloxColumnarBatch> toCudfBatch(const RowVectorPtr& rowVector) {
+  auto veloxPool = getDefaultMemoryManager()->getLeafMemoryPool();
+  auto stream = cudf_velox::cudfGlobalStreamPool().get_stream();
+  auto table = cudf_velox::with_arrow::toCudfTable(
+      rowVector,
+      veloxPool.get(),
+      stream,
+      cudf_velox::get_output_mr());
+  stream.synchronize();
+  auto cudfVector = std::make_shared<cudf_velox::CudfVector>(
+      veloxPool.get(),
+      asRowType(rowVector->type()),
+      rowVector->size(),
+      std::move(table),
+      stream);
+  return std::make_shared<VeloxColumnarBatch>(cudfVector, rowVector->childrenSize());
+}
+
 RowVectorPtr mergeBufferColumnarBatches(std::vector<std::shared_ptr<GpuBufferColumnarBatch>>& bufferBatches) {
   GpuBufferBatchResizer resizer(
       getDefaultMemoryManager()->defaultArrowMemoryPool(),
@@ -128,7 +164,11 @@ RowVectorPtr mergeBufferColumnarBatches(std::vector<std::shared_ptr<GpuBufferCol
 
   // Convert back to Velox
   return cudf_velox::with_arrow::toVeloxColumn(
-      tableView, getDefaultMemoryManager()->getLeafMemoryPool().get(), "", vector->stream(), cudf_velox::get_temp_mr());
+      tableView,
+      getDefaultMemoryManager()->getLeafMemoryPool().get(),
+      "",
+      vector->stream(),
+      cudf::get_current_device_resource_ref());
 }
 
 std::vector<GpuShuffleTestParams> getTestParams() {
@@ -449,6 +489,82 @@ class GpuRoundRobinPartitioningShuffleWriterTest : public GpuVeloxShuffleWriterT
     return createShuffleWriterOptions(Partitioning::kRoundRobin, 4096);
   }
 };
+
+TEST_P(GpuSinglePartitioningShuffleWriterTest, broadcastHashTableBuildAcceptsCudfBatch) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({1, 1, 2, 3}),
+      makeFlatVector<int64_t>({101, 102, 201, 301}),
+  });
+  auto cudfBatch = toCudfBatch(input);
+  auto cudfVector = std::dynamic_pointer_cast<cudf_velox::CudfVector>(cudfBatch->getRowVector());
+  ASSERT_NE(cudfVector, nullptr);
+
+  const std::vector<std::string> joinKeys{"ws_warehouse_sk", "ws_order_number"};
+  std::vector<std::string> names(joinKeys.begin(), joinKeys.end());
+  std::vector<TypePtr> types{BIGINT(), BIGINT()};
+  std::vector<std::shared_ptr<ColumnarBatch>> batches{cudfBatch};
+
+  std::shared_ptr<HashTableBuilder> builder;
+  ASSERT_NO_THROW(
+      builder = nativeHashTableBuild(
+          joinKeys,
+          std::move(names),
+          std::move(types),
+          static_cast<int>(::substrait::JoinRel_JoinType::JoinRel_JoinType_JOIN_TYPE_INNER),
+          false,
+          false,
+          false,
+          0,
+          batches,
+          getDefaultMemoryManager()->getLeafMemoryPool()));
+  ASSERT_NE(builder, nullptr);
+}
+
+TEST_P(GpuSinglePartitioningShuffleWriterTest, veloxBatchResizerMaterializesCudfInputs) {
+  auto mergedInputA = makeRowVector({
+      makeFlatVector<int64_t>({1, 2}),
+      makeFlatVector<int64_t>({11, 22}),
+  });
+  auto mergedInputB = makeRowVector({
+      makeFlatVector<int64_t>({3, 4}),
+      makeFlatVector<int64_t>({33, 44}),
+  });
+  std::vector<std::shared_ptr<ColumnarBatch>> mergedInputs{toCudfBatch(mergedInputA), toCudfBatch(mergedInputB)};
+  VeloxBatchResizer mergedResizer(
+      pool(),
+      3,
+      10,
+      1L << 20,
+      std::make_unique<GenericColumnarBatchArray>(mergedInputs));
+  auto mergedOutput = VeloxColumnarBatch::from(pool(), mergedResizer.next())->getRowVector();
+  ASSERT_EQ(mergedOutput->size(), 4);
+  ASSERT_EQ(mergedOutput->childrenSize(), 2);
+  EXPECT_NO_THROW(mergedOutput->childAt(1));
+  ASSERT_EQ(mergedResizer.next(), nullptr);
+
+  auto slicedInput = makeRowVector({
+      makeFlatVector<int64_t>({1, 2, 3, 4, 5, 6}),
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50, 60}),
+  });
+  std::vector<std::shared_ptr<ColumnarBatch>> slicedInputs{toCudfBatch(slicedInput)};
+  VeloxBatchResizer slicedResizer(
+      pool(),
+      1,
+      3,
+      0,
+      std::make_unique<GenericColumnarBatchArray>(slicedInputs));
+
+  auto firstSlice = VeloxColumnarBatch::from(pool(), slicedResizer.next())->getRowVector();
+  ASSERT_EQ(firstSlice->size(), 3);
+  ASSERT_EQ(firstSlice->childrenSize(), 2);
+  EXPECT_NO_THROW(firstSlice->childAt(1));
+
+  auto secondSlice = VeloxColumnarBatch::from(pool(), slicedResizer.next())->getRowVector();
+  ASSERT_EQ(secondSlice->size(), 3);
+  ASSERT_EQ(secondSlice->childrenSize(), 2);
+  EXPECT_NO_THROW(secondSlice->childAt(1));
+  ASSERT_EQ(slicedResizer.next(), nullptr);
+}
 
 TEST_P(GpuSinglePartitioningShuffleWriterTest, single) {
   if (GetParam().shuffleWriterType != ShuffleWriterType::kHashShuffle) {

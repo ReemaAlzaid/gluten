@@ -42,6 +42,7 @@
 #include "shuffle/rss/RssPartitionWriter.h"
 #include "substrait/SubstraitToVeloxPlanValidator.h"
 #include "utils/ObjectStore.h"
+#include "utils/CudfVectorUtils.h"
 #include "utils/VeloxBatchResizer.h"
 #include "velox/common/base/BloomFilter.h"
 #include "velox/common/file/FileSystems.h"
@@ -707,7 +708,7 @@ JNIEXPORT jlong JNICALL Java_org_apache_gluten_columnarbatch_VeloxColumnarBatchJ
   auto veloxBatch = std::dynamic_pointer_cast<VeloxColumnarBatch>(batch);
   VELOX_CHECK_NOT_NULL(veloxBatch, "Expected VeloxColumnarBatch but got a different type.");
 
-  auto rowVector = veloxBatch->getRowVector();
+  auto rowVector = materializeVeloxRowVector(veloxBatch->getRowVector(), veloxBatch->getRowVector()->pool());
   auto prunedVector = rowVector->slice(offset, limit);
 
   auto prunedRowVector = std::dynamic_pointer_cast<facebook::velox::RowVector>(prunedVector);
