@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -35,6 +36,7 @@
 #include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
 #include <aws/s3/S3Client.h>
+#include <aws/s3/model/AbortMultipartUploadRequest.h>
 #include <aws/s3/model/CompleteMultipartUploadRequest.h>
 #include <aws/s3/model/CompletedMultipartUpload.h>
 #include <aws/s3/model/CompletedPart.h>
@@ -271,6 +273,11 @@ std::shared_ptr<Aws::S3::S3Client> createWriteClient(const std::shared_ptr<files
       getCredentialsProvider(*s3Config), nullptr /* endpointProvider */, clientConfig);
 }
 
+std::shared_ptr<folly::CPUThreadPoolExecutor> createUploadThreadPool(uint32_t uploadThreads) {
+  return std::make_shared<folly::CPUThreadPoolExecutor>(
+      uploadThreads, std::make_shared<folly::NamedThreadFactory>("s3-upload-thread"));
+}
+
 class GlutenS3WriteFile : public velox::WriteFile {
  public:
   GlutenS3WriteFile(
@@ -279,14 +286,15 @@ class GlutenS3WriteFile : public velox::WriteFile {
       velox::memory::MemoryPool* pool,
       size_t minPartSize,
       uint32_t maxConcurrentUploadNum,
-      uint32_t uploadThreads)
+      std::shared_ptr<folly::CPUThreadPoolExecutor> uploadThreadPool)
       : client_(client),
         pool_(pool),
         minPartSize_(minPartSize),
         uploadThrottle_(std::make_unique<folly::ThrottledLifoSem>(maxConcurrentUploadNum)),
-        uploadThreadPool_(uploadThreadPool(uploadThreads)) {
+        uploadThreadPool_(std::move(uploadThreadPool)) {
     VELOX_CHECK_NOT_NULL(client_);
     VELOX_CHECK_NOT_NULL(pool_);
+    VELOX_CHECK_NOT_NULL(uploadThreadPool_);
     filesystems::getBucketAndKeyFromPath(path, bucket_, key_);
     currentPart_ = std::make_unique<velox::dwio::common::DataBuffer<char>>(*pool_);
     currentPart_->reserve(minPartSize_);
@@ -296,13 +304,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
   }
 
   ~GlutenS3WriteFile() override {
-    if (!uploadFutures_.empty()) {
-      try {
-        waitForAsyncUploads();
-      } catch (const std::exception& e) {
-        LOG(ERROR) << "Failed while waiting for S3 async uploads: " << e.what();
-      }
-    }
+    cleanupMultipartUpload();
   }
 
   void append(std::string_view data) override {
@@ -333,12 +335,18 @@ class GlutenS3WriteFile : public velox::WriteFile {
       return;
     }
 
-    RECORD_METRIC_VALUE(filesystems::kMetricS3StartedUploads);
-    uploadPart({currentPart_->data(), currentPart_->size()}, true);
-    waitForAsyncUploads();
-    VELOX_CHECK_EQ(uploadState_.partNumber, uploadState_.completedParts.size());
-    completeMultipartUpload();
-    currentPart_->clear();
+    try {
+      RECORD_METRIC_VALUE(filesystems::kMetricS3StartedUploads);
+      uploadPart({currentPart_->data(), currentPart_->size()}, true);
+      waitForAsyncUploads();
+      VELOX_CHECK_EQ(uploadState_.partNumber, uploadState_.completedParts.size());
+      completeMultipartUpload();
+      currentPart_->clear();
+    } catch (...) {
+      abortMultipartUpload();
+      currentPart_->clear();
+      throw;
+    }
   }
 
   uint64_t size() const override {
@@ -352,17 +360,30 @@ class GlutenS3WriteFile : public velox::WriteFile {
     Aws::String id;
   };
 
-  static std::shared_ptr<folly::CPUThreadPoolExecutor> uploadThreadPool(uint32_t uploadThreads) {
-    std::lock_guard<std::mutex> l(uploadThreadPoolMutex_);
-    if (!sharedUploadThreadPool_) {
-      sharedUploadThreadPool_ = std::make_shared<folly::CPUThreadPoolExecutor>(
-          uploadThreads, std::make_shared<folly::NamedThreadFactory>("s3-upload-thread"));
-    }
-    return sharedUploadThreadPool_;
-  }
-
   bool closed() const {
     return currentPart_->capacity() == 0;
+  }
+
+  bool multipartUploadInProgress() const {
+    return !uploadState_.id.empty() && !multipartUploadCompleted_ && !multipartUploadAborted_;
+  }
+
+  void cleanupMultipartUpload() noexcept {
+    if (!multipartUploadInProgress()) {
+      return;
+    }
+
+    if (!uploadFutures_.empty()) {
+      try {
+        waitForAsyncUploads();
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed while waiting for S3 async uploads: " << e.what();
+      } catch (...) {
+        LOG(ERROR) << "Failed while waiting for S3 async uploads.";
+      }
+    }
+
+    abortMultipartUpload();
   }
 
   void ensureObjectDoesNotExist() {
@@ -435,6 +456,34 @@ class GlutenS3WriteFile : public velox::WriteFile {
       RECORD_METRIC_VALUE(filesystems::kMetricS3FailedUploads);
     }
     VELOX_CHECK_AWS_OUTCOME(outcome, "Failed to complete multiple part upload", bucket_, key_);
+    multipartUploadCompleted_ = true;
+  }
+
+  void abortMultipartUpload() noexcept {
+    if (!multipartUploadInProgress()) {
+      return;
+    }
+
+    try {
+      Aws::S3::Model::AbortMultipartUploadRequest request;
+      request.SetBucket(filesystems::awsString(bucket_));
+      request.SetKey(filesystems::awsString(key_));
+      request.SetUploadId(uploadState_.id);
+
+      auto outcome = client_->AbortMultipartUpload(request);
+      if (outcome.IsSuccess()) {
+        multipartUploadAborted_ = true;
+        return;
+      }
+
+      const auto& error = outcome.GetError();
+      LOG(ERROR) << "Failed to abort S3 multipart upload: bucket=" << bucket_ << ", key=" << key_
+                 << ", uploadId=" << uploadState_.id << ", message=" << error.GetMessage();
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "Failed to abort S3 multipart upload: " << e.what();
+    } catch (...) {
+      LOG(ERROR) << "Failed to abort S3 multipart upload.";
+    }
   }
 
   void upload(std::string_view data) {
@@ -498,13 +547,27 @@ class GlutenS3WriteFile : public velox::WriteFile {
 
     auto results = folly::collectAll(std::move(uploadFutures_)).get();
     uploadFutures_.clear();
+    std::exception_ptr firstException;
     for (auto& result : results) {
+      if (result.hasException()) {
+        if (!firstException) {
+          try {
+            result.throwUnlessValue();
+          } catch (...) {
+            firstException = std::current_exception();
+          }
+        }
+        continue;
+      }
       uploadState_.completedParts.push_back(std::move(result.value()));
     }
     std::sort(
         uploadState_.completedParts.begin(),
         uploadState_.completedParts.end(),
         [](const auto& left, const auto& right) { return left.GetPartNumber() < right.GetPartNumber(); });
+    if (firstException) {
+      std::rethrow_exception(firstException);
+    }
   }
 
   Aws::S3::S3Client* const client_;
@@ -518,8 +581,8 @@ class GlutenS3WriteFile : public velox::WriteFile {
   std::unique_ptr<folly::ThrottledLifoSem> uploadThrottle_;
   std::shared_ptr<folly::CPUThreadPoolExecutor> uploadThreadPool_;
   std::vector<folly::Future<Aws::S3::Model::CompletedPart>> uploadFutures_;
-  inline static std::shared_ptr<folly::CPUThreadPoolExecutor> sharedUploadThreadPool_;
-  inline static std::mutex uploadThreadPoolMutex_;
+  bool multipartUploadCompleted_ = false;
+  bool multipartUploadAborted_ = false;
 };
 
 std::shared_ptr<filesystems::FileSystem> glutenS3FileSystemFactory(
@@ -544,6 +607,14 @@ GlutenS3FileSystem::GlutenS3FileSystem(
 bool GlutenS3FileSystem::uploadPartAsync() const {
   auto value = getS3ConfigValue(config_, bucketName_, kPartUploadAsync, kPartUploadAsyncLegacy);
   return value.has_value() && folly::to<bool>(value.value());
+}
+
+std::shared_ptr<folly::CPUThreadPoolExecutor> GlutenS3FileSystem::uploadThreadPool(uint32_t uploadThreads) {
+  std::lock_guard<std::mutex> l(uploadThreadPoolMutex_);
+  if (!uploadThreadPool_) {
+    uploadThreadPool_ = createUploadThreadPool(uploadThreads);
+  }
+  return uploadThreadPool_;
 }
 
 Aws::S3::S3Client* GlutenS3FileSystem::writeClient() {
@@ -571,7 +642,12 @@ std::unique_ptr<velox::WriteFile> GlutenS3FileSystem::openFileForWrite(
 
   const auto path = filesystems::getPath(s3Path);
   return std::make_unique<GlutenS3WriteFile>(
-      path, writeClient(), options.pool, s3Config_->minPartSize(), maxConcurrentUploadNum, uploadThreads);
+      path,
+      writeClient(),
+      options.pool,
+      s3Config_->minPartSize(),
+      maxConcurrentUploadNum,
+      uploadThreadPool(uploadThreads));
 }
 
 void registerGlutenS3FileSystem(filesystems::CacheKeyFn cacheKeyFunc) {
