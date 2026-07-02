@@ -66,7 +66,8 @@ object CudfNodeValidationRule {
       VeloxConfig.get.cudfEnableValidation,
       () =>
         VeloxCudfPlanValidatorJniWrapper.validate(
-          transformer.substraitPlan.toProtobuf.toByteArray))
+          transformer.substraitPlan.toProtobuf.toByteArray)
+    )
 
     if (canOffload) {
       transformer.foreach {
@@ -86,14 +87,13 @@ object CudfNodeValidationRule {
    *
    * Pure (no native calls) so the branching can be unit-tested:
    *   - a stage that reads a table is offloadable only when GPU table scan is enabled;
-   *   - otherwise, when validation is enabled, the native validator decides (it exempts
-   *     TableScan, so a scan-bearing stage passes only when every other operator is
-   *     cuDF-capable);
+   *   - otherwise, when validation is enabled, the native validator decides (it exempts TableScan,
+   *     so a scan-bearing stage passes only when every other operator is cuDF-capable);
    *   - when validation is disabled, the stage is offloaded optimistically.
    *
-   * `validate` is invoked only on the validation path, never when a table-reading stage is
-   * rejected up front, so the previous "tag GPU unconditionally when table scan is enabled"
-   * behavior no longer skips validation.
+   * `validate` is invoked only on the validation path, never when a table-reading stage is rejected
+   * up front, so the previous "tag GPU unconditionally when table scan is enabled" behavior no
+   * longer skips validation.
    */
   private[extension] def decideOffload(
       hasLeaf: Boolean,
