@@ -443,6 +443,8 @@ class GlutenS3WriteFile : public velox::WriteFile {
     auto remainingBufferSize = currentPart_->capacity() - currentPart_->size();
     currentPart_->unsafeAppend(dataPtr, remainingBufferSize);
     uploadPart({currentPart_->data(), currentPart_->size()});
+    currentPart_->clear();
+    currentPart_->reserve(minPartSize_);
     dataPtr += remainingBufferSize;
     dataSize -= remainingBufferSize;
     while (dataSize > minPartSize_) {
@@ -450,7 +452,7 @@ class GlutenS3WriteFile : public velox::WriteFile {
       dataPtr += minPartSize_;
       dataSize -= minPartSize_;
     }
-    currentPart_->unsafeAppend(0, dataPtr, dataSize);
+    currentPart_->unsafeAppend(dataPtr, dataSize);
   }
 
   void uploadPart(std::string_view part, bool isLast = false) {
