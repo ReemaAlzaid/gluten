@@ -25,6 +25,7 @@
 #include "memory/VeloxColumnarBatch.h"
 #include "substrait/algebra.pb.h"
 #include "substrait/type.pb.h"
+#include "utils/CudfVectorUtils.h"
 #include "velox/core/PlanNode.h"
 #include "velox/type/Type.h"
 
@@ -149,7 +150,9 @@ std::shared_ptr<HashTableBuilder> nativeHashTableBuild(
       abandonHashBuildDedupMinPct);
 
   for (auto i = 0; i < batches.size(); i++) {
-    auto rowVector = VeloxColumnarBatch::from(memoryPool.get(), batches[i])->getRowVector();
+    auto rowVector = materializeVeloxRowVector(
+        VeloxColumnarBatch::from(memoryPool.get(), batches[i])->getRowVector(),
+        memoryPool.get());
     hashTableBuilder->addInput(rowVector);
     if (hashTableBuilder->noMoreInput()) {
       break;

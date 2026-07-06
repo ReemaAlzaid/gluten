@@ -23,6 +23,8 @@
 
 #include "velox/exec/OperatorUtils.h"
 
+#include "utils/CudfVectorUtils.h"
+
 namespace gluten {
 namespace {
 facebook::velox::RowTypePtr hashJoinTableType(
@@ -252,6 +254,11 @@ void HashTableBuilder::setupTable() {
 }
 
 void HashTableBuilder::addInput(facebook::velox::RowVectorPtr input) {
+  // The build side (including broadcast build) may arrive as a GPU-resident
+  // CudfVector, which has no host-side children. Materialize it to a host
+  // RowVector before reading key channels below; otherwise childAt() below
+  // dereferences a null child and crashes.
+  input = materializeVeloxRowVector(input, pool_);
   activeRows_.resize(input->size());
   activeRows_.setAll();
 

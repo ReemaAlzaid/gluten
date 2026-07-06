@@ -17,6 +17,7 @@
 
 #include "RowVectorStream.h"
 #include "memory/VeloxColumnarBatch.h"
+#include "utils/CudfVectorUtils.h"
 #include "velox/exec/Driver.h"
 #include "velox/exec/Operator.h"
 #include "velox/exec/OperatorUtils.h"
@@ -43,7 +44,6 @@ class SuspendedSection {
  private:
   facebook::velox::exec::Driver* const driver_;
 };
-
 } // namespace
 
 namespace gluten {
@@ -100,7 +100,7 @@ std::shared_ptr<ColumnarBatch> RowVectorStream::nextInternal() {
 facebook::velox::RowVectorPtr RowVectorStream::next() {
   auto cb = nextInternal();
   const std::shared_ptr<VeloxColumnarBatch>& vb = VeloxColumnarBatch::from(pool_, cb);
-  auto vp = vb->getRowVector();
+  auto vp = materializeVeloxRowVector(vb->getRowVector(), pool_);
   VELOX_DCHECK(vp != nullptr);
   return std::make_shared<facebook::velox::RowVector>(
       vp->pool(), outputType_, facebook::velox::BufferPtr(0), vp->size(), vp->children());
