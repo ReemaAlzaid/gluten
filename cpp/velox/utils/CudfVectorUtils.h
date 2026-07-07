@@ -38,11 +38,7 @@ inline facebook::velox::RowVectorPtr materializeVeloxRowVector(
   auto cudfVector = std::dynamic_pointer_cast<facebook::velox::cudf_velox::CudfVector>(rowVector);
   if (cudfVector != nullptr) {
     return facebook::velox::cudf_velox::with_arrow::toVeloxColumn(
-        cudfVector->getTableView(),
-        memoryPool,
-        "",
-        cudfVector->stream(),
-        cudf::get_current_device_resource_ref());
+        cudfVector->getTableView(), memoryPool, "", cudfVector->stream(), cudf::get_current_device_resource_ref());
   }
 #endif
   return rowVector;

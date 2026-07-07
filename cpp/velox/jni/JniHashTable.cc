@@ -152,8 +152,7 @@ std::shared_ptr<HashTableBuilder> nativeHashTableBuild(
 
   for (auto i = 0; i < batches.size(); i++) {
     auto rowVector = materializeVeloxRowVector(
-        VeloxColumnarBatch::from(memoryPool.get(), batches[i])->getRowVector(),
-        memoryPool.get());
+        VeloxColumnarBatch::from(memoryPool.get(), batches[i])->getRowVector(), memoryPool.get());
     hashTableBuilder->addInput(rowVector);
     if (hashTableBuilder->noMoreInput()) {
       break;
