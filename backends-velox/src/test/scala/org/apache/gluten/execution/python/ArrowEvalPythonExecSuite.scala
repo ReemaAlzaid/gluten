@@ -38,7 +38,8 @@ class ArrowEvalPythonExecSuite extends WholeStageTransformerSuite {
     newTestScalarPandasUDF(name = "pyarrowUDF", returnType = Some(StringType))
   private val pyarrowTestUDFLong =
     newTestScalarPandasUDF(name = "pyarrowUDF", returnType = Some(LongType))
-  // Spark exposes this value through a package-private PythonEvalType object.
+  // Spark exposes these values through a package-private PythonEvalType object.
+  private val SQL_BATCHED_UDF = 100
   private val SQL_ARROW_BATCHED_UDF = 101
   private lazy val arrowBatchedTestUDFString =
     newTestArrowBatchedPythonUDF(name = "arrowBatchedUDF", returnType = Some(StringType))
@@ -125,31 +126,49 @@ class ArrowEvalPythonExecSuite extends WholeStageTransformerSuite {
         val df = base.select(arrowUdfCol).agg(max("shipmode_arrow").as("max_shipmode"))
         val expected = Seq(Tuple1("SHIP")).toDF("max_shipmode")
 
-        checkSparkPlan[ColumnarArrowEvalPythonExec](df)
         checkAnswer(df, expected)
+        checkSparkPlan[ColumnarArrowEvalPythonExec](df)
     }
   }
 
   private def newTestArrowBatchedPythonUDF(
       name: String,
       returnType: Option[DataType] = None): UserDefinedPythonFunction = {
-    val regularPythonUDF = newTestPythonUDF(name, returnType)
-    val regularUDF = regularPythonUDF.getClass
+    val pythonUDF =
+      newTestPythonUDF(name, returnType, Some(SQL_ARROW_BATCHED_UDF))
+    val udf = pythonUDF.getClass
       .getMethod("udf")
-      .invoke(regularPythonUDF)
+      .invoke(pythonUDF)
       .asInstanceOf[UserDefinedPythonFunction]
-    regularUDF.copy(
-      regularUDF.name,
-      regularUDF.func,
-      regularUDF.dataType,
-      SQL_ARROW_BATCHED_UDF,
-      regularUDF.udfDeterministic)
+    if (SparkVersionUtil.gteSpark41) {
+      udf
+    } else {
+      udf.copy(
+        udf.name,
+        udf.func,
+        udf.dataType,
+        SQL_ARROW_BATCHED_UDF,
+        udf.udfDeterministic)
+    }
   }
 
   private def newTestPythonUDF(
       name: String,
-      returnType: Option[DataType] = None): TestPythonUDF = {
-    if (SparkVersionUtil.gteSpark40) {
+      returnType: Option[DataType] = None,
+      pythonEvalType: Option[Int] = None): TestPythonUDF = {
+    if (SparkVersionUtil.gteSpark41) {
+      classOf[TestPythonUDF]
+        .getConstructor(
+          classOf[String],
+          classOf[Option[DataType]],
+          Integer.TYPE,
+          java.lang.Boolean.TYPE)
+        .newInstance(
+          name,
+          returnType,
+          pythonEvalType.getOrElse(SQL_BATCHED_UDF).asInstanceOf[Integer],
+          java.lang.Boolean.TRUE)
+    } else if (SparkVersionUtil.gteSpark40) {
       // After https://github.com/apache/spark/pull/42864 which landed in Spark 4.0, the return
       // type of the UDF must be explicitly specified when creating the UDF instance with column
       // expressions as parameter.
