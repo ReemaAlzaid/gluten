@@ -60,6 +60,9 @@ class ColumnarArrowPythonRunner(
 
   override val simplifiedTraceback: Boolean = SQLConf.get.pysparkSimplifiedTraceback
 
+  // Keep this source compatible with older Spark profiles where PythonEvalType differs.
+  private val SQL_ARROW_BATCHED_UDF = 101
+
   override val bufferSize: Int = SQLConf.get.pandasUDFBufferSize
   require(
     bufferSize >= 4,
@@ -150,6 +153,9 @@ class ColumnarArrowPythonRunner(
         for ((k, v) <- conf) {
           PythonRDD.writeUTF(k, dataOut)
           PythonRDD.writeUTF(v, dataOut)
+        }
+        if (SparkVersionUtil.gteSpark41 && evalType == SQL_ARROW_BATCHED_UDF) {
+          PythonRDD.writeUTF(schema.json, dataOut)
         }
         ColumnarArrowPythonRunner.this.writeUdf(dataOut, argMetas)
       }
