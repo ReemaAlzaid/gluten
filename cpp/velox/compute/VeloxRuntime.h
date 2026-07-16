@@ -96,7 +96,7 @@ class VeloxRuntime final : public Runtime {
 
   std::shared_ptr<ShuffleReader> createShuffleReader(
       std::shared_ptr<arrow::Schema> schema,
-      ShuffleReaderOptions options) override;
+      const std::shared_ptr<ShuffleReaderOptions>& options) override;
 
   std::unique_ptr<ColumnarBatchSerializer> createColumnarBatchSerializer(struct ArrowSchema* cSchema) override;
 
