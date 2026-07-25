@@ -1055,6 +1055,7 @@ JNIEXPORT jlong JNICALL Java_org_apache_gluten_vectorized_HashJoinBuilder_native
         builder->dropDuplicates(),
         nullptr);
     builder->setHashTable(std::move(mainTable));
+    builder->setHashTableMemoryUsage(builder->hashTable()->allocatedBytes());
 
     auto* cache = facebook::velox::exec::HashTableCache::instance();
 
@@ -1123,6 +1124,10 @@ JNIEXPORT jlong JNICALL Java_org_apache_gluten_vectorized_HashJoinBuilder_native
   for (int i = 1; i < numThreads; ++i) {
     tables.push_back(std::move(otherTables[i]));
   }
+  int64_t otherTablesMemoryUsage = 0;
+  for (const auto& table : tables) {
+    otherTablesMemoryUsage += table->allocatedBytes();
+  }
 
   // TODO: Get accurate signal if parallel join build is going to be applied
   //  from hash table. Currently there is still a chance inside hash table that
@@ -1144,6 +1149,8 @@ JNIEXPORT jlong JNICALL Java_org_apache_gluten_vectorized_HashJoinBuilder_native
   }
 
   hashTableBuilders[0]->setHashTable(std::move(mainTable));
+  hashTableBuilders[0]->setHashTableMemoryUsage(
+      hashTableBuilders[0]->hashTable()->allocatedBytes() + otherTablesMemoryUsage);
 
   auto* cache = facebook::velox::exec::HashTableCache::instance();
   if (!cache->exist(hashTableId)) {
@@ -1258,6 +1265,16 @@ Java_org_apache_gluten_vectorized_HashJoinBuilder_getHashTableBloomFilterBlocksB
     }
   }
   return static_cast<jlong>(bloomFilterBlocksByteSize);
+  JNI_METHOD_END(0L)
+}
+
+JNIEXPORT jlong JNICALL Java_org_apache_gluten_vectorized_HashJoinBuilder_getHashTableMemoryUsage( // NOLINT
+    JNIEnv* env,
+    jclass,
+    jlong hashTableHandle) {
+  JNI_METHOD_START
+  auto builder = ObjectStore::retrieve<gluten::HashTableBuilder>(hashTableHandle);
+  return static_cast<jlong>(gluten::hashTableMemoryUsage(builder));
   JNI_METHOD_END(0L)
 }
 

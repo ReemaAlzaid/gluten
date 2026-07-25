@@ -14,10 +14,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.gluten.substrait.derivation;
+package org.apache.gluten.execution
 
-import io.substrait.proto.DerivationExpression;
+trait StageExecutionMode {
+  def name: String = this.getClass.getSimpleName.replaceAll("\\$", "")
+  def id: Int
+}
 
-public interface DerivationExpressionNode {
-  DerivationExpression toProtobuf();
+case object CPUStageMode extends StageExecutionMode {
+  override def id: Int = 0
+}
+case object GPUStageMode extends StageExecutionMode {
+  override def id: Int = 1
+}
+case object MockGPUStageMode extends StageExecutionMode {
+  override def id: Int = 0
+}
+
+object StageExecutionMode {
+  def fromId(id: Int): StageExecutionMode = id match {
+    case 0 => CPUStageMode
+    case 1 => GPUStageMode
+    case _ => throw new IllegalArgumentException(s"Unknown StageExecutionMode id: $id")
+  }
 }
