@@ -173,7 +173,7 @@ std::shared_ptr<ColumnarBatch> VeloxBatchResizer::collectAndCopy(
   std::shared_ptr<ColumnarBatch> cb;
   for (cb = in_->next(); cb != nullptr; cb = in_->next()) {
     auto vb = VeloxColumnarBatch::from(pool_, cb);
-    auto rv = vb->getRowVector();
+    auto rv = materializeVeloxRowVector(vb->getRowVector(), pool_);
     uint64_t addedBytes = cb->numBytes();
     if (bufferedRows + rv->size() > maxOutputBatchSize_ ||
         numBytes + addedBytes > static_cast<uint64_t>(preferredBatchBytes_)) {
@@ -213,6 +213,9 @@ std::shared_ptr<ColumnarBatch> VeloxBatchResizer::next() {
   if (cb->numRows() < minOutputBatchSize_ && numBytes <= preferredBatchBytes_) {
     auto vb = VeloxColumnarBatch::from(pool_, cb);
     auto rv = materializeVeloxRowVector(vb->getRowVector(), pool_);
+    if (enableCopyRanges_) {
+      return collectAndCopy(std::move(rv), numBytes);
+    }
     auto buffer = facebook::velox::RowVector::createEmpty(rv->type(), pool_);
     appendToBuffer(buffer, rv);
 

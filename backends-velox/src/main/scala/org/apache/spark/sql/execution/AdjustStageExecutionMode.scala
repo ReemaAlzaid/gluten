@@ -94,9 +94,19 @@ object AdjustStageExecutionMode extends Logging {
           Right(queryStageExec),
           stageExecutionMode)
       case shuffle: ColumnarShuffleExchangeExec =>
+        // Keep the shuffle-input resizer (the exchange's direct child) in CPU mode. GPU mode
+        // repurposes VeloxResizeBatchesExec as the GPU-buffer to cudf table converter, which
+        // only accepts buffer batches produced by a GPU shuffle read — not the CudfVector
+        // batches the stage's transformer emits ahead of a shuffle write.
+        val newChild = shuffle.child match {
+          case resize: VeloxResizeBatchesExec =>
+            resize.copy(child = adjustExecutionMode(resize.child, stageExecutionMode))
+          case other =>
+            adjustExecutionMode(other, stageExecutionMode)
+        }
         shuffle
           .copy(mapperStageMode = Some(stageExecutionMode))
-          .withNewChildren(Seq(adjustExecutionMode(shuffle.child, stageExecutionMode)))
+          .withNewChildren(Seq(newChild))
       case resizeBatches: VeloxResizeBatchesExec =>
         VeloxResizeBatchesExec(
           adjustExecutionMode(resizeBatches.child, stageExecutionMode),
