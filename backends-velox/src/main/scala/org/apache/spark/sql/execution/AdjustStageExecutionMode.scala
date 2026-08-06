@@ -85,14 +85,10 @@ object AdjustStageExecutionMode extends Logging {
       // TODO: support BroadcastQueryStageExec.
       case aqeShuffleRead @ AQEShuffleReadExec(s @ ShuffleQueryStageExec(_, _, _), _)
           if s.shuffle.isInstanceOf[ColumnarShuffleExchangeExec] =>
-        ColumnarAQEShuffleReadExec(
-          Left(aqeShuffleRead),
-          stageExecutionMode)
+        ColumnarAQEShuffleReadExec(aqeShuffleRead, stageExecutionMode)
       case queryStageExec: ShuffleQueryStageExec
           if queryStageExec.shuffle.isInstanceOf[ColumnarShuffleExchangeExec] =>
-        ColumnarAQEShuffleReadExec(
-          Right(queryStageExec),
-          stageExecutionMode)
+        ColumnarAQEShuffleReadExec(queryStageExec, stageExecutionMode)
       case shuffle: ColumnarShuffleExchangeExec =>
         // Keep the shuffle-input resizer (the exchange's direct child) in CPU mode. GPU mode
         // repurposes VeloxResizeBatchesExec as the GPU-buffer to cudf table converter, which
@@ -106,10 +102,14 @@ object AdjustStageExecutionMode extends Logging {
         }
         shuffle
           .copy(mapperStageMode = Some(stageExecutionMode))
-          .withNewChildren(Seq(newChild))
-      case resizeBatches: VeloxResizeBatchesExec =>
+          .withNewChildren(Seq(adjustExecutionMode(shuffle.child, stageExecutionMode)))
+      case r: VeloxResizeBatchesExec
+          // TODO: This should be removed after merging resize into native shuffle read.
+          // Only change the execution mode for shuffle reader.
+          if r.child.isInstanceOf[ShuffleQueryStageExec] ||
+            r.child.isInstanceOf[AQEShuffleReadExec] =>
         VeloxResizeBatchesExec(
-          adjustExecutionMode(resizeBatches.child, stageExecutionMode),
+          adjustExecutionMode(r.child, stageExecutionMode),
           Some(stageExecutionMode))
       case _ =>
         plan.withNewChildren(plan.children.map(adjustExecutionMode(_, stageExecutionMode)))

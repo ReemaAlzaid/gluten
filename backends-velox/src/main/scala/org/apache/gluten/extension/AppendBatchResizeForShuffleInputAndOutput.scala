@@ -30,14 +30,10 @@ import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQuery
 case class AppendBatchResizeForShuffleInputAndOutput(isAdaptiveContext: Boolean)
   extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
-    val veloxConfig = VeloxConfig.get
-    val resizeBatchesShuffleInputEnabled = veloxConfig.veloxResizeBatchesShuffleInput
-    // When cuDF is enabled, resizing shuffle output is a correctness requirement rather than an
-    // optimization: AdjustStageExecutionMode repurposes VeloxResizeBatchesExec in GPU stages as
-    // the GPU-buffer to cudf table conversion, without which GPU pipelines cannot consume
-    // shuffle reads. So force-enable it in that case.
+    val resizeBatchesShuffleInputEnabled = VeloxConfig.get.veloxResizeBatchesShuffleInput
+    // TODO: Move cudf resize batches into shuffle reader.
     val resizeBatchesShuffleOutputEnabled =
-      veloxConfig.veloxResizeBatchesShuffleOutput || veloxConfig.enableColumnarCudf
+      VeloxConfig.get.veloxResizeBatchesShuffleOutput || VeloxConfig.get.enableColumnarCudf
     if (!resizeBatchesShuffleInputEnabled && !resizeBatchesShuffleOutputEnabled) {
       return plan
     }
