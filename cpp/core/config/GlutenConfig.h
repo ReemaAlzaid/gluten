@@ -112,6 +112,10 @@ const std::string kDebugCudf = "spark.gluten.sql.debug.cudf";
 const std::string kDebugCudfDefault = "false";
 const std::string kCudfAllowCpuFallback = "spark.gluten.sql.columnar.backend.velox.cudf.allowCpuFallback";
 const std::string kCudfAllowCpuFallbackDefault = "true";
+// When true, a device-resident CudfVector reaching a host read site fails the query
+// instead of being materialized. Intended for tests/CI to surface conversion gaps.
+const std::string kCudfStrictResidency = "spark.gluten.sql.columnar.backend.velox.cudf.strictResidency";
+constexpr bool kCudfStrictResidencyDefault = false;
 
 std::unordered_map<std::string, std::string>
 parseConfMap(JNIEnv* env, const uint8_t* planData, const int32_t planDataLength);
