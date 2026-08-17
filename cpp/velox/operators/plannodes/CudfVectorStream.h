@@ -24,6 +24,7 @@
 #include "velox/exec/Operator.h"
 #include "velox/exec/Task.h"
 #include "velox/experimental/cudf/exec/CudfOperator.h"
+#include "velox/experimental/cudf/exec/GpuResources.h"
 #include "velox/experimental/cudf/exec/Utilities.h"
 #include "velox/experimental/cudf/exec/VeloxCudfInterop.h"
 #include "velox/experimental/cudf/vector/CudfVector.h"
@@ -114,14 +115,23 @@ class CudfVectorStream : public CudfVectorStreamBase {
     auto vp = vb->getRowVector();
     VELOX_DCHECK(vp != nullptr);
     auto cudfVector = std::dynamic_pointer_cast<facebook::velox::cudf_velox::CudfVector>(vp);
-    if (cudfVector == nullptr) {
-      // The vector may comes from BroadcastExchange, in this case, it's not a CudfVector.
+    if (cudfVector != nullptr) {
       vp->setType(outputType_);
-      return vp;
+      return cudfVector;
     }
-    VELOX_CHECK_NOT_NULL(cudfVector);
+
+    vp->setType(outputType_);
+    auto stream = facebook::velox::cudf_velox::cudfGlobalStreamPool().get_stream();
+    if (vp->childrenSize() == 0) {
+      return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
+          vp->pool(), outputType_, vp->size(), std::make_unique<cudf::table>(), stream);
+    }
+
+    auto table = facebook::velox::cudf_velox::with_arrow::toCudfTable(
+        vp, pool_, stream, facebook::velox::cudf_velox::get_output_mr());
+    VELOX_CHECK_NOT_NULL(table);
     return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
-        vp->pool(), outputType_, vp->size(), cudfVector->release(), cudfVector->stream());
+        vp->pool(), outputType_, table->num_rows(), std::move(table), stream);
   }
 };
 
