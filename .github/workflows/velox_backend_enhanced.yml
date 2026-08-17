@@ -23,7 +23,6 @@ on:
       - 'backends-velox/**'
       - 'gluten-uniffle/**'
       - 'gluten-celeborn/**'
-      - 'gluten-ras/**'
       - 'gluten-core/**'
       - 'gluten-substrait/**'
       - 'gluten-arrow/**'
@@ -81,16 +80,18 @@ jobs:
             export CCACHE_DIR=/work/.ccache
             export CCACHE_MAXSIZE=1G
             mkdir -p /work/.ccache
+            ccache -sz
             bash dev/ci-velox-buildstatic-centos-7-enhanced-features.sh
             ccache -s
           "
 
       - name: "Save ccache"
-        uses: actions/cache/save@v4
-        id: ccache
+        if: always()
+        uses: apache/infrastructure-actions/stash/save@0ba14156c9f4c3cfbe4b0c9f36339ab0f8d81e53
         with:
           path: '${{ env.CCACHE_DIR }}'
-          key: ccache-enhanced-centos7-release-default-${{github.sha}}
+          key: ccache-enhanced-centos7-release-default-${{ hashFiles('ep/build-velox/src/**') }}
+          include-hidden-files: true
       - uses: actions/upload-artifact@v7
         with:
           name: velox-native-lib-enhanced-centos-7-${{github.sha}}
@@ -153,9 +154,6 @@ jobs:
   spark-test-spark35-slow:
     needs: build-native-lib-centos-7
     runs-on: ubuntu-22.04
-    env: #TODO remove after image update
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
     container: apache/gluten:centos-8-jdk8
     steps:
       - uses: actions/checkout@v7
@@ -164,10 +162,6 @@ jobs:
         with:
           name: velox-native-lib-enhanced-centos-7-${{github.sha}}
           path: ./cpp/build/releases
-      - name: Prepare Spark Resources for Spark 3.5.5 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark35
-          bash .github/workflows/util/install-spark-resources.sh 3.5
       - name: Build and Run unit test for Spark 3.5.5 (slow tests)
         run: |
           cd $GITHUB_WORKSPACE/
@@ -221,10 +215,6 @@ jobs:
           pip3 install setuptools==77.0.3 && \
           pip3 install pyspark==3.5.5 cython && \
           pip3 install pandas==2.2.3 pyarrow==20.0.0
-      - name: Prepare Spark Resources for Spark 4.0.1 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark40
-          bash .github/workflows/util/install-spark-resources.sh 4.0
       - name: Build and Run unit test for Spark 4.0.0 with scala-2.13 (other tests, group ${{ matrix.group }})
         run: |
           cd $GITHUB_WORKSPACE/

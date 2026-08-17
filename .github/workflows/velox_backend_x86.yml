@@ -19,13 +19,10 @@ on:
   pull_request:
     paths:
       - '.github/workflows/velox_backend_x86.yml'
-      - '.github/workflows/util/install-spark-deps.sh' #TODO remove after image update
-      - '.github/workflows/util/install-spark-resources.sh' #TODO remove after image update
       - 'pom.xml'
       - 'backends-velox/**'
       - 'gluten-uniffle/**'
       - 'gluten-celeborn/**'
-      - 'gluten-ras/**'
       - 'gluten-core/**'
       - 'gluten-substrait/**'
       - 'gluten-arrow/**'
@@ -90,11 +87,11 @@ jobs:
 
       - name: "Save ccache"
         if: always()
-        uses: actions/cache/save@v4
-        id: ccache
+        uses: apache/infrastructure-actions/stash/save@0ba14156c9f4c3cfbe4b0c9f36339ab0f8d81e53
         with:
           path: '${{ env.CCACHE_DIR }}'
-          key: ccache-centos7-release-default-${{github.sha}}
+          key: ccache-centos7-release-default-${{ hashFiles('ep/build-velox/src/**') }}
+          include-hidden-files: true
       - uses: actions/upload-artifact@v7
         with:
           name: velox-native-lib-centos-7-${{github.sha}}
@@ -691,8 +688,6 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       SPARK_TESTING: true
-      LANG: C.UTF-8 #TODO remove after image update
-      LC_ALL: C.UTF-8
     container: apache/gluten:centos-8-jdk8
     steps:
       - uses: actions/checkout@v7
@@ -701,10 +696,6 @@ jobs:
         with:
           name: velox-native-lib-centos-7-${{github.sha}}
           path: ./cpp/build/
-      - name: Prepare Spark Resources for Spark 3.3.1 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark33
-          bash .github/workflows/util/install-spark-resources.sh 3.3
 
       - name: Build and Run unit test for Spark 3.3.1 (slow tests)
         run: |
@@ -809,9 +800,6 @@ jobs:
       fail-fast: false
       matrix:
         suite: [extended, slow-hive]
-    env: #TODO remove after image update
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
     container: apache/gluten:centos-8-jdk8
     steps:
       - uses: actions/checkout@v7
@@ -820,10 +808,6 @@ jobs:
         with:
           name: velox-native-lib-centos-7-${{github.sha}}
           path: ./cpp/build/
-      - name: Prepare Spark Resources for Spark 3.4.4 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark34
-          bash .github/workflows/util/install-spark-resources.sh 3.4
       - name: Build and Run unit test for Spark 3.4.4 (slow tests, ${{ matrix.suite }})
         run: |
           cd $GITHUB_WORKSPACE/
@@ -996,8 +980,6 @@ jobs:
         suite: [extended, slow-hive]
     env:
       SPARK_TESTING: true
-      LANG: C.UTF-8 #TODO remove after image update
-      LC_ALL: C.UTF-8
     container: apache/gluten:centos-8-jdk8
     steps:
       - uses: actions/checkout@v7
@@ -1006,10 +988,6 @@ jobs:
         with:
           name: velox-native-lib-centos-7-${{github.sha}}
           path: ./cpp/build/
-      - name: Prepare Spark Resources for Spark 3.5.5 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark35
-          bash .github/workflows/util/install-spark-resources.sh 3.5
       - name: Build and Run unit test for Spark 3.5.5 (slow tests, ${{ matrix.suite }})
         run: |
           cd $GITHUB_WORKSPACE/
@@ -1047,6 +1025,10 @@ jobs:
     container: apache/gluten:centos-9-jdk8
     steps:
       - uses: actions/checkout@v7
+        with:
+          # 'check.py tidy commit' diffs HEAD^..HEAD, which a depth-1 clone lacks: the
+          # diff comes back empty and the check passes without inspecting anything.
+          fetch-depth: 2
       - name: Install Stash restore dependencies # the stash action needs gh and jq, absent from this container
         run: |
           case "$(uname -m)" in
@@ -1078,6 +1060,36 @@ jobs:
           df -a
           bash dev/ci-velox-buildshared-centos-9.sh
           ccache -s
+      # Runs in this job because clang-tidy needs the compilation database and header tree
+      # the build just produced; only 'cpp/build/' is uploaded, so shipping
+      # 'compile_commands.json' to another job leaves its '-I' paths dangling.
+      - name: Check Clang Tidy
+        # Advisory until observed green: clang-tidy re-parses a database written by
+        # gcc-toolset-12, so toolchain-level diagnostics are still possible.
+        continue-on-error: true
+        env:
+          # Make the GCC-generated database clang-safe: point clang at the libstdc++ the
+          # build used, and mirror the '-Wno-' flags cpp/CMakeLists.txt adds on its Clang
+          # branch, which the database lacks while still carrying '-Werror'.
+          CLANG_TIDY_EXTRA_ARGS: >-
+            --extra-arg=--gcc-toolchain=/opt/rh/gcc-toolset-12/root/usr
+            --extra-arg=-Wno-error
+            --extra-arg=-Wno-unknown-warning-option
+            --extra-arg=-Wno-implicit-int-float-conversion
+            --extra-arg=-Wno-nullability-completeness
+            --extra-arg=-Wno-mismatched-tags
+        run: |
+          # check.py shells out to git; the workspace is owned by another UID.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Skip the toolchain install when no C++ changed; check.py itself already no-ops.
+          if ! git diff --name-only HEAD^ HEAD | grep -qE '^cpp/.*\.(cc|cpp|h)$'; then
+            echo "No C++ changes in this pull request; skipping clang-tidy."
+            exit 0
+          fi
+          dnf install -y clang-tools-extra # TODO remove after image update
+          pip3 install regex
+          clang-tidy --version # log the version so finding changes trace to a clang bump
+          python3 dev/check.py tidy commit
       - name: Run CPP unit test
         run: |
           cd ./cpp/build && ctest -V
@@ -1152,7 +1164,7 @@ jobs:
             ccache-centos9-cudf-release-shared-${{runner.arch}}
       - name: Build Gluten native libraries
         run: |
-          docker run -v $GITHUB_WORKSPACE:/work -w /work apache/gluten:centos-9-jdk8-cudf bash -c "
+          docker run -v $GITHUB_WORKSPACE:/work -w /work apache/gluten:centos-9-jdk17-cuda13.1-cudf bash -c "
           set -e
           rm -rf /opt/rh/gcc-toolset-12 && ln -s /opt/rh/gcc-toolset-14 /opt/rh/gcc-toolset-12 # hack to use gcc 14, should upgrade in Velox build script later
           df -a
@@ -1209,10 +1221,6 @@ jobs:
           pip3 install setuptools==77.0.3 && \
           pip3 install pyspark==3.5.5 cython && \
           pip3 install pandas==2.2.3 pyarrow==20.0.0
-      - name: Prepare Spark Resources for Spark 4.0.2 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark40
-          bash .github/workflows/util/install-spark-resources.sh 4.0
       - name: Build and Run unit test for Spark 4.0.0 with scala-2.13 (other tests, group ${{ matrix.group }})
         run: |
           cd $GITHUB_WORKSPACE/
@@ -1260,8 +1268,6 @@ jobs:
         suite: [extended, slow-hive]
     env:
       SPARK_TESTING: true
-      LANG: C.UTF-8 #TODO remove after image update
-      LC_ALL: C.UTF-8
     container: apache/gluten:centos-8-jdk17
     steps:
       - uses: actions/checkout@v7
@@ -1270,10 +1276,6 @@ jobs:
         with:
           name: velox-native-lib-centos-7-${{github.sha}}
           path: ./cpp/build/
-      - name: Prepare Spark Resources for Spark 4.0.2 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark40
-          bash .github/workflows/util/install-spark-resources.sh 4.0
       - name: Build and Run unit test for Spark 4.0 (slow tests, ${{ matrix.suite }})
         run: |
           cd $GITHUB_WORKSPACE/
@@ -1336,10 +1338,6 @@ jobs:
           pip3 install setuptools==77.0.3 && \
           pip3 install pyspark==3.5.5 cython && \
           pip3 install pandas==2.2.3 pyarrow==20.0.0
-      - name: Prepare Spark Resources for Spark 4.1.1 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark41
-          bash .github/workflows/util/install-spark-resources.sh 4.1
       - name: Build and Run unit test for Spark 4.1.0 with scala-2.13 (other tests, group ${{ matrix.group }})
         run: |
           cd $GITHUB_WORKSPACE/
@@ -1391,8 +1389,6 @@ jobs:
         suite: [extended, slow-hive]
     env:
       SPARK_TESTING: true
-      LANG: C.UTF-8 #TODO remove after image update
-      LC_ALL: C.UTF-8
     container: apache/gluten:centos-9-jdk17
     steps:
       - uses: actions/checkout@v7
@@ -1401,10 +1397,6 @@ jobs:
         with:
           name: velox-native-lib-centos-7-${{github.sha}}
           path: ./cpp/build/
-      - name: Prepare Spark Resources for Spark 4.1.1 #TODO remove after image update
-        run: |
-          rm -rf /opt/shims/spark41
-          bash .github/workflows/util/install-spark-resources.sh 4.1
       - name: Build and Run unit test for Spark 4.1 (slow tests, ${{ matrix.suite }})
         run: |
           cd $GITHUB_WORKSPACE/
