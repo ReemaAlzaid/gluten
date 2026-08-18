@@ -17,7 +17,6 @@
 
 #include "CudfVectorStream.h"
 #include "memory/VeloxColumnarBatch.h"
-#include "utils/CudfVectorUtils.h"
 #include "velox/exec/Driver.h"
 #include "velox/exec/Operator.h"
 #include "velox/exec/Task.h"
@@ -42,6 +41,7 @@ class SuspendedSection {
  private:
   facebook::velox::exec::Driver* const driver_;
 };
+
 } // namespace
 
 namespace gluten {
@@ -87,8 +87,14 @@ std::shared_ptr<ColumnarBatch> CudfVectorStreamBase::nextInternal() {
 facebook::velox::RowVectorPtr CudfVectorStreamBase::next() {
   auto cb = nextInternal();
   const std::shared_ptr<VeloxColumnarBatch>& vb = VeloxColumnarBatch::from(pool_, cb);
-  auto vp = materializeVeloxRowVector(vb->getRowVector(), pool_);
+  auto vp = vb->getRowVector();
   VELOX_DCHECK(vp != nullptr);
+  // A device-resident CudfVector exposes no host children; re-wrapping it below
+  // would strip its payload. Hand it through re-typed instead.
+  if (auto cudfVector = std::dynamic_pointer_cast<facebook::velox::cudf_velox::CudfVector>(vp)) {
+    return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
+        vp->pool(), outputType_, vp->size(), cudfVector->release(), cudfVector->stream());
+  }
   return std::make_shared<facebook::velox::RowVector>(
       vp->pool(), outputType_, facebook::velox::BufferPtr(0), vp->size(), vp->children());
 }

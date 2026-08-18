@@ -32,7 +32,6 @@
 #ifdef GLUTEN_ENABLE_GPU
 #include "cudf/GpuLock.h"
 #include "operators/plannodes/CudfVectorStream.h"
-#include "utils/CudfVectorUtils.h"
 #include "velox/experimental/cudf/CudfConfig.h"
 #include "velox/experimental/cudf/connectors/hive/CudfHiveConnector.h"
 #include "velox/experimental/cudf/exec/SparkAggregateFunctions.h"
@@ -219,7 +218,6 @@ void VeloxBackend::init(
            backendConf_->get(kCudfAllowCpuFallback, kCudfAllowCpuFallbackDefault)}};
       auto& cudfConfig = velox::cudf_velox::CudfConfig::getInstance();
       cudfConfig.initialize(std::move(options));
-      cudfStrictResidency().store(backendConf_->get<bool>(kCudfStrictResidency, kCudfStrictResidencyDefault));
       velox::cudf_velox::registerCudf();
       velox::exec::Operator::registerOperator(std::make_unique<CudfVectorStreamOperatorTranslator>());
       velox::cudf_velox::registerSparkFunctions("");

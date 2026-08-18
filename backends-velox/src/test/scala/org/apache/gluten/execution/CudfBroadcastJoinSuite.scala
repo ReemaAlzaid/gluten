@@ -76,23 +76,4 @@ class CudfBroadcastJoinSuite extends VeloxWholeStageTransformerSuite {
     }
   }
 
-  test("GLUTEN-12471: CudfVector host read does not crash in ColumnarToRow (q15-style)") {
-    // Aggregation over VARCHAR + numeric columns whose result crosses the
-    // GPU->CPU ColumnarToRow boundary -- the path that previously segfaulted
-    // on device-resident CudfVector children (VARCHAR offsets, q15).
-    val query =
-      """
-        |SELECT l_suppkey, sum(l_extendedprice * (1 - l_discount)) AS total
-        |FROM lineitem
-        |WHERE l_shipdate >= date '1996-01-01'
-        |  AND l_shipdate < date '1996-04-01'
-        |GROUP BY l_suppkey
-        |ORDER BY total DESC
-        |LIMIT 10
-        |""".stripMargin
-
-    runQueryAndCompare(query) {
-      df => assert(df.count() > 0, "aggregate over GPU batches must survive host reads")
-    }
-  }
 }

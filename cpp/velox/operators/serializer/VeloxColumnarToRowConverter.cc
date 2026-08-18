@@ -67,12 +67,7 @@ void VeloxColumnarToRowConverter::refreshStates(facebook::velox::RowVectorPtr ro
 
 void VeloxColumnarToRowConverter::convert(std::shared_ptr<ColumnarBatch> cb, int64_t startRow) {
   auto veloxBatch = VeloxColumnarBatch::from(veloxPool_.get(), cb);
-  // Materialize a GPU-resident CudfVector to host before the UnsafeRow read below.
-  // getFlattenedRowVector() -> ensureFlattened() -> materializeVeloxRowVector(). Without
-  // this, a device-resident CudfVector's host children are empty/garbage, so columnar->row
-  // (broadcast build side + result return) produces empty/corrupt rows -> empty broadcast
-  // joins and VARCHAR-offset SIGSEGVs. No-op for plain host RowVectors.
-  refreshStates(veloxBatch->getFlattenedRowVector(), startRow);
+  refreshStates(veloxBatch->getRowVector(), startRow);
 
   // Initialize the offsets_ , lengths_
   lengths_.clear();

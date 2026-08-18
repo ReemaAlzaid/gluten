@@ -24,6 +24,7 @@
 #include "velox/exec/Operator.h"
 #include "velox/exec/Task.h"
 #include "velox/experimental/cudf/exec/CudfOperator.h"
+#include "velox/experimental/cudf/exec/GpuResources.h"
 #include "velox/experimental/cudf/exec/Utilities.h"
 #include "velox/experimental/cudf/exec/VeloxCudfInterop.h"
 #include "velox/experimental/cudf/vector/CudfVector.h"
@@ -115,11 +116,25 @@ class CudfVectorStream : public CudfVectorStreamBase {
     VELOX_DCHECK(vp != nullptr);
     auto cudfVector = std::dynamic_pointer_cast<facebook::velox::cudf_velox::CudfVector>(vp);
     if (cudfVector == nullptr) {
-      // The vector may comes from BroadcastExchange, in this case, it's not a CudfVector.
+      // The batch arrives host-resident, e.g. from a BroadcastExchange or a CPU
+      // shuffle read feeding this GPU stage. This operator advertises GPU output
+      // (no CudfFromVelox is inserted after it), so upload the batch here instead
+      // of leaking a host vector into device-only operators like CudfTopN.
       vp->setType(outputType_);
-      return vp;
+      auto stream = facebook::velox::cudf_velox::cudfGlobalStreamPool().get_stream();
+      if (vp->childrenSize() == 0) {
+        // Zero-column cudf tables cannot carry a row count; keep it on the vector.
+        return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
+            vp->pool(), outputType_, vp->size(), std::make_unique<cudf::table>(), stream);
+      }
+      for (auto& child : vp->children()) {
+        child->loadedVector();
+      }
+      auto table = facebook::velox::cudf_velox::with_arrow::toCudfTable(
+          vp, vp->pool(), stream, facebook::velox::cudf_velox::get_output_mr());
+      return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
+          vp->pool(), outputType_, vp->size(), std::move(table), stream);
     }
-    VELOX_CHECK_NOT_NULL(cudfVector);
     return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
         vp->pool(), outputType_, vp->size(), cudfVector->release(), cudfVector->stream());
   }

@@ -17,12 +17,15 @@
 
 #include "RowVectorStream.h"
 #include "memory/VeloxColumnarBatch.h"
-#include "utils/CudfVectorUtils.h"
 #include "velox/exec/Driver.h"
 #include "velox/exec/Operator.h"
 #include "velox/exec/OperatorUtils.h"
 #include "velox/exec/Task.h"
 #include "velox/vector/arrow/Bridge.h"
+
+#ifdef GLUTEN_ENABLE_GPU
+#include "velox/experimental/cudf/vector/CudfVector.h"
+#endif
 
 namespace {
 
@@ -44,6 +47,7 @@ class SuspendedSection {
  private:
   facebook::velox::exec::Driver* const driver_;
 };
+
 } // namespace
 
 namespace gluten {
@@ -100,8 +104,18 @@ std::shared_ptr<ColumnarBatch> RowVectorStream::nextInternal() {
 facebook::velox::RowVectorPtr RowVectorStream::next() {
   auto cb = nextInternal();
   const std::shared_ptr<VeloxColumnarBatch>& vb = VeloxColumnarBatch::from(pool_, cb);
-  auto vp = materializeVeloxRowVector(vb->getRowVector(), pool_);
+  auto vp = vb->getRowVector();
   VELOX_DCHECK(vp != nullptr);
+#ifdef GLUTEN_ENABLE_GPU
+  // A device-resident CudfVector exposes no host children, so the re-wrap below
+  // would build a RowVector whose type claims children it doesn't carry and any
+  // downstream childAt() would fail. Hand the device vector through re-typed and
+  // let the cudf operators consume it directly.
+  if (auto cudfVector = std::dynamic_pointer_cast<facebook::velox::cudf_velox::CudfVector>(vp)) {
+    return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
+        vp->pool(), outputType_, vp->size(), cudfVector->release(), cudfVector->stream());
+  }
+#endif
   return std::make_shared<facebook::velox::RowVector>(
       vp->pool(), outputType_, facebook::velox::BufferPtr(0), vp->size(), vp->children());
 }

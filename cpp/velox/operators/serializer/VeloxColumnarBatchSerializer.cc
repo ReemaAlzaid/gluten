@@ -27,7 +27,6 @@
 
 #include "memory/ArrowMemory.h"
 #include "memory/VeloxColumnarBatch.h"
-#include "utils/CudfVectorUtils.h"
 #include "velox/common/compression/Compression.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/vector/FlatVector.h"
@@ -70,10 +69,6 @@ VeloxColumnarBatchSerializer::VeloxColumnarBatchSerializer(
 
 void VeloxColumnarBatchSerializer::append(const std::shared_ptr<ColumnarBatch>& batch) {
   auto rowVector = VeloxColumnarBatch::from(veloxPool_.get(), batch)->getRowVector();
-  // A GPU-resident CudfVector serializes as zero rows because its host-side
-  // children are empty. Materialize to host so broadcast/shuffle payloads carry
-  // the real data instead of an empty build side.
-  rowVector = materializeVeloxRowVector(rowVector, veloxPool_.get());
   if (serializer_ == nullptr) {
     // Using first batch's schema to create the Velox serializer. This logic was introduced in
     // https://github.com/apache/gluten/pull/1568. It's a bit suboptimal because the schemas
@@ -401,9 +396,6 @@ std::vector<uint8_t> VeloxColumnarBatchSerializer::framedSerializeWithStats(
   // Compute stats over the inbound rowVector BEFORE delegating to the append path (which may
   // consume / mutate iterator state on subsequent calls).
   auto rowVector = VeloxColumnarBatch::from(veloxPool_.get(), batch)->getRowVector();
-  // Materialize a GPU-resident CudfVector to host so stats are computed over
-  // real rows (the subsequent append() re-materializes independently).
-  rowVector = materializeVeloxRowVector(rowVector, veloxPool_.get());
   const uint32_t numRows = static_cast<uint32_t>(rowVector->size());
   std::vector<ColumnStats> perCol = computeStats(rowVector);
   const uint32_t numCols = static_cast<uint32_t>(perCol.size());
