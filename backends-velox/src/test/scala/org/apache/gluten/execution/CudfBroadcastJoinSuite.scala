@@ -16,6 +16,8 @@
  */
 package org.apache.gluten.execution
 
+import org.apache.gluten.tags.CudfTest
+
 import org.apache.spark.SparkConf
 
 /**
@@ -23,18 +25,17 @@ import org.apache.spark.SparkConf
  * returned empty results because CudfHashJoin built its hash table from the empty build-side
  * iterator instead of the prebuilt CPU table.
  *
- * These tests require GPU hardware and a cuDF-enabled build, so they are skipped unless the env var
- * GLUTEN_TEST_CUDF=1 is set. Run on a GPU host:
+ * These tests require GPU hardware and a cuDF-enabled build, so they are tagged with CudfTest and
+ * excluded from regular CI runs. Run on a GPU host:
  *
- * GLUTEN_TEST_CUDF=1 mvn test -Pbackends-velox \
+ * mvn test -Pbackends-velox -DtagsToExclude=None \
  * -DwildcardSuites=org.apache.gluten.execution.CudfBroadcastJoinSuite
  */
+@CudfTest
 class CudfBroadcastJoinSuite extends VeloxWholeStageTransformerSuite {
 
   override protected val resourcePath: String = "/tpch-data-parquet"
   override protected val fileFormat: String = "parquet"
-
-  private def cudfEnabled: Boolean = sys.env.get("GLUTEN_TEST_CUDF").contains("1")
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
@@ -49,14 +50,10 @@ class CudfBroadcastJoinSuite extends VeloxWholeStageTransformerSuite {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    if (cudfEnabled) {
-      createTPCHNotNullTables()
-    }
+    createTPCHNotNullTables()
   }
 
   test("GLUTEN-12471: cuDF broadcast hash join returns non-empty, correct results") {
-    assume(cudfEnabled, "Set GLUTEN_TEST_CUDF=1 on a GPU host to run cuDF suites")
-
     val query =
       """
         |SELECT l.l_orderkey, o.o_orderdate, l.l_extendedprice
@@ -80,8 +77,6 @@ class CudfBroadcastJoinSuite extends VeloxWholeStageTransformerSuite {
   }
 
   test("GLUTEN-12471: CudfVector host read does not crash in ColumnarToRow (q15-style)") {
-    assume(cudfEnabled, "Set GLUTEN_TEST_CUDF=1 on a GPU host to run cuDF suites")
-
     // Aggregation over VARCHAR + numeric columns whose result crosses the
     // GPU->CPU ColumnarToRow boundary -- the path that previously segfaulted
     // on device-resident CudfVector children (VARCHAR offsets, q15).
