@@ -24,6 +24,8 @@
 #include "velox/vector/arrow/Bridge.h"
 
 #ifdef GLUTEN_ENABLE_GPU
+#include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/exec/VeloxCudfInterop.h"
 #include "velox/experimental/cudf/vector/CudfVector.h"
 #endif
 
@@ -107,11 +109,17 @@ facebook::velox::RowVectorPtr RowVectorStream::next() {
   auto vp = vb->getRowVector();
   VELOX_DCHECK(vp != nullptr);
 #ifdef GLUTEN_ENABLE_GPU
-  // A device-resident CudfVector exposes no host children, so the re-wrap below
-  // would build a RowVector whose type claims children it doesn't carry and any
-  // downstream childAt() would fail. Hand the device vector through re-typed and
-  // let the cudf operators consume it directly.
+  // A CudfVector carries no host children, so the re-wrap below would crash
+  // childAt() downstream. Pure-GPU mode guarantees a device-capable consumer,
+  // so pass it through; under CPU fallback the consumer may be CPU-only, so
+  // fail loudly here at the residency boundary instead.
   if (auto cudfVector = std::dynamic_pointer_cast<facebook::velox::cudf_velox::CudfVector>(vp)) {
+    VELOX_CHECK(
+        !facebook::velox::cudf_velox::CudfConfig::getInstance().allowCpuFallback,
+        "Host-contract value stream received a device-resident CudfVector while CPU fallback is enabled. "
+        "The producing exchange keeps batches on device but this stage was planned for host input; "
+        "adjust the producing exchange's stage execution mode. Rows: {}",
+        vp->size());
     return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
         vp->pool(), outputType_, vp->size(), cudfVector->release(), cudfVector->stream());
   }
@@ -181,8 +189,17 @@ std::optional<facebook::velox::RowVectorPtr> ValueStreamDataSource::next(
   completedRows_ += rowVector->size();
   completedBytes_ += rowVector->estimateFlatSize();
 
-  // Apply dynamic filters if any have been pushed down.
+  // Apply dynamic filters if any have been pushed down. Filters read host
+  // children, which a CudfVector lacks, so materialize it to host first.
   if (!dynamicFilters_.empty()) {
+#ifdef GLUTEN_ENABLE_GPU
+    if (auto cudfVector = std::dynamic_pointer_cast<facebook::velox::cudf_velox::CudfVector>(rowVector)) {
+      auto host = facebook::velox::cudf_velox::with_arrow::toVeloxColumn(
+          cudfVector->getTableView(), pool_, "", cudfVector->stream(), cudf::get_current_device_resource_ref());
+      rowVector = std::make_shared<facebook::velox::RowVector>(
+          host->pool(), outputType_, facebook::velox::BufferPtr(0), host->size(), host->children());
+    }
+#endif
     rowVector = applyDynamicFilters(rowVector);
     if (!rowVector) {
       // All rows filtered out, try next batch.
