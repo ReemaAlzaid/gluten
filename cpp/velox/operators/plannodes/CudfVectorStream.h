@@ -120,18 +120,27 @@ class CudfVectorStream : public CudfVectorStreamBase {
       // shuffle read feeding this GPU stage. This operator advertises GPU output
       // (no CudfFromVelox is inserted after it), so upload the batch here instead
       // of leaking a host vector into device-only operators like CudfTopN.
-      vp->setType(outputType_);
       auto stream = facebook::velox::cudf_velox::cudfGlobalStreamPool().get_stream();
-      if (vp->childrenSize() == 0) {
+      if (vp->childrenSize() == 0 || outputType_->size() == 0) {
         // Zero-column cudf tables cannot carry a row count; keep it on the vector.
         return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
             vp->pool(), outputType_, vp->size(), std::make_unique<cudf::table>(), stream);
       }
-      for (auto& child : vp->children()) {
+      // Broadcast batches may carry extra trailing columns (e.g. the appended hash
+      // key column), so keep only the columns the stream's output type declares.
+      VELOX_CHECK_GE(
+          vp->childrenSize(),
+          outputType_->size(),
+          "Value stream batch has fewer columns than the declared output type");
+      std::vector<facebook::velox::VectorPtr> children(
+          vp->children().begin(), vp->children().begin() + outputType_->size());
+      for (auto& child : children) {
         child->loadedVector();
       }
+      auto host = std::make_shared<facebook::velox::RowVector>(
+          vp->pool(), outputType_, facebook::velox::BufferPtr(0), vp->size(), std::move(children));
       auto table = facebook::velox::cudf_velox::with_arrow::toCudfTable(
-          vp, vp->pool(), stream, facebook::velox::cudf_velox::get_output_mr());
+          host, host->pool(), stream, facebook::velox::cudf_velox::get_output_mr());
       return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
           vp->pool(), outputType_, vp->size(), std::move(table), stream);
     }
