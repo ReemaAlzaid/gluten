@@ -18,6 +18,7 @@ package org.apache.spark.sql.execution
 
 import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.columnarbatch.ColumnarBatches
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution.BroadcastHashJoinContext
 import org.apache.gluten.expression.ConverterUtils
 import org.apache.gluten.iterator.Iterators
@@ -39,6 +40,8 @@ import org.apache.spark.task.TaskResources
 import org.apache.spark.util.KnownSizeEstimation
 
 import org.apache.arrow.c.ArrowSchema
+
+import java.util.Collections
 
 import scala.collection.JavaConverters._
 import scala.collection.JavaConverters.asScalaIteratorConverter
@@ -111,8 +114,16 @@ case class ColumnarBuildSideRelation(
   }
 
   override def deserialized: Iterator[ColumnarBatch] = {
+    // Force host deserialization. This runtime is built from the session conf, so with
+    // cudf enabled it would pick the GPU serializer and upload every batch to the device,
+    // even when the consuming stage is not offloaded to cuDF and expects host batches.
+    // Both serializer flavors share the same wire format; cuDF consumers upload host
+    // batches themselves (CudfVectorStream).
     val runtime =
-      Runtimes.contextInstance(BackendsApiManager.getBackendName, "BuildSideRelation#deserialized")
+      Runtimes.contextInstance(
+        BackendsApiManager.getBackendName,
+        "BuildSideRelation#deserialized",
+        Collections.singletonMap(GlutenConfig.COLUMNAR_CUDF_ENABLED.key, "false"))
     val jniWrapper = ColumnarBatchSerializerJniWrapper.create(runtime)
     val serializeHandle: Long = {
       val allocator = ArrowBufferAllocators.contextInstance()
