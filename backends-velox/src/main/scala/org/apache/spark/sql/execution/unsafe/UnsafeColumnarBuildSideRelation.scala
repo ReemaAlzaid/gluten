@@ -374,17 +374,20 @@ class UnsafeColumnarBuildSideRelation(
       }
   }
 
-  override def deserialized: Iterator[ColumnarBatch] = {
-    // Force host deserialization. This runtime is built from the session conf, so with
-    // cudf enabled it would pick the GPU serializer and upload every batch to the device,
-    // even when the consuming stage is not offloaded to cuDF and expects host batches.
-    // Both serializer flavors share the same wire format; cuDF consumers upload host
-    // batches themselves (CudfVectorStream).
+  /** Host-resident deserialization, for CPU consumers. */
+  override def deserialized: Iterator[ColumnarBatch] = deserialized(cudfEnabled = false)
+
+  /**
+   * Residency follows the consuming stage: a cuDF-offloaded stage sources from CudfValueStream and
+   * needs device batches, a non-offloaded stage from RowVectorStream and needs host batches.
+   */
+  def deserialized(cudfEnabled: Boolean): Iterator[ColumnarBatch] = {
     val runtime =
       Runtimes.contextInstance(
         BackendsApiManager.getBackendName,
         "UnsafeBuildSideRelation#deserialize",
-        Collections.singletonMap(GlutenConfig.COLUMNAR_CUDF_ENABLED.key, "false"))
+        Collections.singletonMap(GlutenConfig.COLUMNAR_CUDF_ENABLED.key, cudfEnabled.toString)
+      )
     val jniWrapper = ColumnarBatchSerializerJniWrapper.create(runtime)
     val serializerHandle: Long = {
       val allocator = ArrowBufferAllocators.contextInstance()
