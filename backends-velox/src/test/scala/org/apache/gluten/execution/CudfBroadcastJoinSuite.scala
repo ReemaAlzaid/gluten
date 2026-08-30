@@ -94,6 +94,11 @@ class CudfBroadcastJoinSuite extends VeloxWholeStageTransformerSuite {
         val plan = df.queryExecution.executedPlan
         val bhj = collect(plan) { case j: BroadcastHashJoinExecTransformer => j }
         assert(bhj.nonEmpty, s"expected a broadcast hash join for the anti join, got:\n$plan")
+        // The point of the test: the join must stay off cuDF, so the build side has to
+        // arrive on the host.
+        assert(
+          bhj.forall(!_.offloadCuda),
+          s"expected the broadcast hash join to be un-tagged for cuDF, got:\n$plan")
     }
   }
 
