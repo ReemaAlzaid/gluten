@@ -23,7 +23,6 @@ import org.apache.gluten.memory.memtarget.Spillers;
 
 import org.apache.arrow.memory.AllocationListener;
 import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
 import org.apache.spark.memory.GlobalOffHeapMemory;
 import org.apache.spark.task.TaskResource;
 import org.apache.spark.task.TaskResources;
@@ -41,7 +40,7 @@ public class ArrowBufferAllocators {
   static {
     final AllocationListener listener =
         new ManagedAllocationListener(GlobalOffHeapMemory.target(), GLOBAL_USAGE);
-    GLOBAL_INSTANCE = new RootAllocator(listener, Long.MAX_VALUE);
+    GLOBAL_INSTANCE = GlutenArrowAllocator.createRootAllocator(listener, Long.MAX_VALUE);
   }
 
   private ArrowBufferAllocators() {}
@@ -84,7 +83,8 @@ public class ArrowBufferAllocators {
       }
     }
 
-    private final BufferAllocator managed = new RootAllocator(listener, Long.MAX_VALUE);
+    private final BufferAllocator managed =
+        GlutenArrowAllocator.createRootAllocator(listener, Long.MAX_VALUE);
 
     public ArrowBufferAllocatorManager(String name) {
       this.name = name;
