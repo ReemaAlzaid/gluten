@@ -25,9 +25,11 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gluten {
@@ -144,6 +146,70 @@ TEST_F(GlutenCudfFunctionsTest, rejectsAllLiteralRow) {
       cudf_velox::createCudfFunction(
           RowConstructorWithNullCallToSpecialForm::kRowConstructorWithNull, rowConstructor, pool_.get()),
       nullptr);
+}
+
+TEST_F(GlutenCudfFunctionsTest, sparkLegacyCastIntegerToDouble) {
+  auto input = makeRowVector(
+      {"c0"},
+      {makeNullableFlatVector<int32_t>(
+          {std::numeric_limits<int32_t>::min(),
+           -1,
+           0,
+           1,
+           16777217,
+           std::numeric_limits<int32_t>::max(),
+           std::nullopt})});
+  auto cast = std::make_shared<core::CallTypedExpr>(
+      DOUBLE(),
+      std::vector<core::TypedExprPtr>{std::make_shared<core::FieldAccessTypedExpr>(INTEGER(), "c0")},
+      "spark_legacy_cast");
+
+  ASSERT_TRUE(cudf_velox::canExprRunOnGpu(cast, nullptr, pool_.get()));
+  auto output = evaluateOnGpu(cast, input);
+  auto expected =
+      makeNullableFlatVector<double>({-2147483648.0, -1.0, 0.0, 1.0, 16777217.0, 2147483647.0, std::nullopt});
+  test::assertEqualVectors(expected, output->childAt(0));
+
+  auto nullInput = makeRowVector({"c0"}, {makeNullableFlatVector<int32_t>({std::nullopt, std::nullopt})});
+  auto nullOutput = evaluateOnGpu(cast, nullInput);
+  test::assertEqualVectors(makeNullableFlatVector<double>({std::nullopt, std::nullopt}), nullOutput->childAt(0));
+
+  auto emptyInput = makeRowVector({"c0"}, {makeFlatVector<int32_t>({})});
+  auto emptyOutput = evaluateOnGpu(cast, emptyInput);
+  test::assertEqualVectors(makeFlatVector<double>({}), emptyOutput->childAt(0));
+}
+
+TEST_F(GlutenCudfFunctionsTest, rejectsUnsupportedSparkLegacyCasts) {
+  const std::vector<std::pair<TypePtr, TypePtr>> unsupported{
+      {DATE(), DOUBLE()},
+      {BIGINT(), DOUBLE()},
+      {DECIMAL(10, 2), DOUBLE()},
+      {DOUBLE(), INTEGER()},
+      {VARCHAR(), INTEGER()},
+      {INTEGER(), TINYINT()},
+      {INTEGER(), REAL()}};
+  for (const auto& [fromType, toType] : unsupported) {
+    SCOPED_TRACE(fromType->toString() + " -> " + toType->toString());
+    auto cast = std::make_shared<core::CallTypedExpr>(
+        toType,
+        std::vector<core::TypedExprPtr>{std::make_shared<core::FieldAccessTypedExpr>(fromType, "c0")},
+        "spark_legacy_cast");
+    EXPECT_FALSE(cudf_velox::canExprRunOnGpu(cast, nullptr, pool_.get()));
+    EXPECT_EQ(cudf_velox::createCudfFunction("spark_legacy_cast", cast, pool_.get()), nullptr);
+  }
+}
+
+TEST_F(GlutenCudfFunctionsTest, rejectsLiteralSparkLegacyCast) {
+  // The generic GPU cast expects an input column. Do not select it for a
+  // literal-only call even if a caller bypasses Spark's constant folding.
+  for (const auto& value : {variant(int32_t{1}), variant::null(TypeKind::INTEGER)}) {
+    auto cast = std::make_shared<core::CallTypedExpr>(
+        DOUBLE(),
+        std::vector<core::TypedExprPtr>{std::make_shared<core::ConstantTypedExpr>(INTEGER(), value)},
+        "spark_legacy_cast");
+    EXPECT_FALSE(cudf_velox::canExprRunOnGpu(cast, nullptr, pool_.get()));
+    EXPECT_EQ(cudf_velox::createCudfFunction("spark_legacy_cast", cast, pool_.get()), nullptr);
+  }
 }
 
 } // namespace

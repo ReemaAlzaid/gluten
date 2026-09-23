@@ -83,6 +83,15 @@ bool canEvaluateRowConstructorWithNull(const TypedExprPtr& expr) {
              expr->inputs().begin(), expr->inputs().end(), [](const auto& input) { return !input->isConstantKind(); });
 }
 
+bool canEvaluateSparkLegacyCast(const TypedExprPtr& expr) {
+  // Every INTEGER value is exactly representable as DOUBLE. Other cast pairs
+  // need separate checks for Spark's legacy overflow and invalid-input rules.
+  // Compare logical types: DATE also has INTEGER as its physical type kind.
+  // The delegated cast evaluator requires a column; Spark folds literal casts.
+  return expr->inputs().size() == 1 && expr->inputs()[0]->type() == facebook::velox::INTEGER() &&
+      expr->type() == facebook::velox::DOUBLE() && !expr->inputs()[0]->isConstantKind();
+}
+
 } // namespace
 
 void registerGlutenCudfFunctions() {
@@ -98,6 +107,19 @@ void registerGlutenCudfFunctions() {
       {},
       false,
       canEvaluateRowConstructorWithNull);
+
+  facebook::velox::cudf_velox::registerCudfFunction(
+      "spark_legacy_cast",
+      [](const std::string&,
+         const TypedExprPtr& expr,
+         facebook::velox::memory::MemoryPool* pool) -> std::shared_ptr<CudfFunction> {
+        auto cast = facebook::velox::cudf_velox::createCudfFunction("cast", expr, pool);
+        VELOX_CHECK_NOT_NULL(cast, "cuDF cast must be registered first");
+        return cast;
+      },
+      {},
+      false,
+      canEvaluateSparkLegacyCast);
 }
 
 } // namespace gluten
