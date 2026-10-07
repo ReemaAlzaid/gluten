@@ -23,7 +23,6 @@ import sys
 import tempfile
 import unittest
 
-
 SETUP_DIR = Path(__file__).resolve().parents[2] / "ep/build-velox/src"
 
 
