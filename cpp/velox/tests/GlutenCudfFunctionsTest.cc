@@ -66,7 +66,7 @@ class GlutenCudfFunctionsTest : public ::testing::Test, public test::VectorTestB
     auto outputType = ROW({"result"}, {expr->type()});
     auto result = cudf_velox::with_arrow::toVeloxColumn(
         outputTable, pool_.get(), outputType, "", stream, cudf::get_current_device_resource_ref());
-    stream.synchronize();
+    stream.sync();
     result->setType(outputType);
     return result;
   }

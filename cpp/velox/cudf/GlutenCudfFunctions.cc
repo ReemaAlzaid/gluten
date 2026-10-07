@@ -46,10 +46,8 @@ class RowConstructorWithNullFunction final : public CudfFunction {
     VELOX_CHECK_NOT_NULL(rowConstructor_);
   }
 
-  ColumnOrView eval(
-      std::vector<ColumnOrView>& inputColumns,
-      rmm::cuda_stream_view stream,
-      rmm::device_async_resource_ref mr) const override {
+  ColumnOrView eval(std::vector<ColumnOrView>& inputColumns, cuda::stream_ref stream, rmm::device_async_resource_ref mr)
+      const override {
     auto result = rowConstructor_->eval(inputColumns, stream, mr);
     auto* ownedResult = std::get_if<std::unique_ptr<cudf::column>>(&result);
     VELOX_CHECK_NOT_NULL(ownedResult, "row_constructor must return an owning cuDF column");
