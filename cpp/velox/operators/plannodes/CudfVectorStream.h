@@ -118,21 +118,18 @@ class CudfVectorStream : public CudfVectorStreamBase {
     if (cudfVector == nullptr) {
       // BroadcastExchange may return a host RowVector; upload it for GPU operators.
       auto stream = facebook::velox::cudf_velox::cudfGlobalStreamPool().get_stream();
-      if (vp->childrenSize() == 0 || outputType_->size() == 0) {
+      if (outputType_->size() == 0) {
         // Preserve row count because zero-column cuDF tables cannot store it.
         return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
             vp->pool(), outputType_, vp->size(), std::make_unique<cudf::table>(), stream);
       }
-      // Drop extra trailing columns added by broadcast exchange.
+      // Broadcast preprojection can append join-key columns beyond the stream's output schema.
       VELOX_CHECK_GE(
           vp->childrenSize(),
           outputType_->size(),
           "Value stream batch has fewer columns than the declared output type");
       std::vector<facebook::velox::VectorPtr> children(
           vp->children().begin(), vp->children().begin() + outputType_->size());
-      for (auto& child : children) {
-        child->loadedVector();
-      }
       auto host = std::make_shared<facebook::velox::RowVector>(
           vp->pool(), outputType_, facebook::velox::BufferPtr(0), vp->size(), std::move(children));
       auto table = facebook::velox::cudf_velox::with_arrow::toCudfTable(
