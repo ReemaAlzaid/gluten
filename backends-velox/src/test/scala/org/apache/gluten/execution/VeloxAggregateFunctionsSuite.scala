@@ -22,6 +22,7 @@ import org.apache.gluten.extension.columnar.validator.FallbackInjects
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -417,7 +418,7 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
     }
   }
 
-  testWithMinSparkVersion("regr_slope", "3.4") {
+  test("regr_slope") {
     runQueryAndCompare("""
                          |select regr_slope(l_partkey, l_suppkey) from lineitem;
                          |""".stripMargin) {
@@ -436,7 +437,7 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
     }
   }
 
-  testWithMinSparkVersion("regr_intercept", "3.4") {
+  test("regr_intercept") {
     runQueryAndCompare("""
                          |select regr_intercept(l_partkey, l_suppkey) from lineitem;
                          |""".stripMargin) {
@@ -455,7 +456,7 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
     }
   }
 
-  testWithMinSparkVersion("regr_sxy regr_sxx regr_syy", "3.4") {
+  test("regr_sxy regr_sxx regr_syy") {
     runQueryAndCompare("""
                          |select regr_sxy(l_quantity, l_tax) from lineitem;
                          |""".stripMargin) {
@@ -503,6 +504,26 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
                 plan.isInstanceOf[HashAggregateExecTransformer]
               }) == 4)
         }
+    }
+  }
+
+  test("aggregate over a map column") {
+    // checkType gates the aggregate's result and buffer attributes. Spark has no aggregate that
+    // builds a map out of non-map input, so the type only reaches checkType when a map column is
+    // carried through a type-preserving aggregate -- first / last / any_value / max_by. Velox
+    // holds a map accumulator for these.
+    withTempView("map_agg_tbl") {
+      Seq((1, Map("a" -> 1.0d)), (1, Map("a" -> 1.0d)), (2, Map("b" -> 2.0d)))
+        .toDF("k", "m")
+        .createOrReplaceTempView("map_agg_tbl")
+
+      // One distinct value per group, so which row first keeps does not change the answer.
+      runQueryAndCompare("select k, first(m) from map_agg_tbl group by k") {
+        checkGlutenPlan[HashAggregateExecTransformer]
+      }
+      runQueryAndCompare("select k, last(m) from map_agg_tbl group by k") {
+        checkGlutenPlan[HashAggregateExecTransformer]
+      }
     }
   }
 
@@ -1201,11 +1222,19 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
       ) {
         df =>
           {
-            assert(
-              getExecutedPlan(df).count(
-                plan => {
-                  plan.isInstanceOf[SortHashAggregateExecTransformer]
-                }) == 2)
+            val executedPlan = getExecutedPlan(df)
+            val sortHashCount =
+              executedPlan.count(_.isInstanceOf[SortHashAggregateExecTransformer])
+            val flushableCount =
+              executedPlan.count(_.isInstanceOf[FlushableHashAggregateExecTransformer])
+            assert(sortHashCount + flushableCount == 2)
+            if (VeloxConfig.get.enableVeloxFlushablePartialAggregation) {
+              assert(sortHashCount == 1)
+              assert(flushableCount == 1)
+            } else {
+              assert(sortHashCount == 2)
+              assert(flushableCount == 0)
+            }
           }
       }
     }
@@ -1253,6 +1282,23 @@ class VeloxAggregateFunctionsFlushSuite extends VeloxAggregateFunctionsSuite {
             executedPlan.exists(plan => plan.isInstanceOf[RegularHashAggregateExecTransformer]))
           assert(
             executedPlan.exists(plan => plan.isInstanceOf[FlushableHashAggregateExecTransformer]))
+      }
+    }
+  }
+
+  test("flushable aggregate rule - single-partition partial aggregate") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempView("single_partition") {
+        spark
+          .range(0, 10, 1, 1)
+          .selectExpr("id % 2 as k")
+          .createOrReplaceTempView("single_partition")
+        runQueryAndCompare("select k, count(*) from single_partition group by k") {
+          df =>
+            val executedPlan = getExecutedPlan(df)
+            assert(!executedPlan.exists(_.isInstanceOf[ShuffleExchangeLike]))
+            assert(executedPlan.exists(_.isInstanceOf[FlushableHashAggregateExecTransformer]))
+        }
       }
     }
   }

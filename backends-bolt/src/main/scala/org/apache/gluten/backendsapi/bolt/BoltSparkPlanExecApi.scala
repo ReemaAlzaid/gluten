@@ -144,7 +144,7 @@ class BoltSparkPlanExecApi extends SparkPlanExecApi {
       right: ExpressionTransformer,
       original: Expression,
       checkArithmeticExprName: String): ExpressionTransformer = {
-    if (SparkShimLoader.getSparkShims.withTryEvalMode(original)) {
+    if (ExpressionUtils.withTryEvalMode(original)) {
       original.dataType match {
         case LongType | IntegerType | ShortType | ByteType =>
         case _ =>
@@ -155,7 +155,7 @@ class BoltSparkPlanExecApi extends SparkPlanExecApi {
         ExpressionMappings.expressionsMap(classOf[TryEval]),
         Seq(GenericExpressionTransformer(checkArithmeticExprName, Seq(left, right), original)),
         original)
-    } else if (SparkShimLoader.getSparkShims.withAnsiEvalMode(original)) {
+    } else if (ExpressionUtils.withAnsiEvalMode(original)) {
       GenericExpressionTransformer(checkArithmeticExprName, Seq(left, right), original)
     } else {
       GenericExpressionTransformer(substraitExprName, Seq(left, right), original)
@@ -920,7 +920,7 @@ class BoltSparkPlanExecApi extends SparkPlanExecApi {
       substraitExprName: String,
       child: ExpressionTransformer,
       expr: UnBase64): ExpressionTransformer = {
-    if (SparkShimLoader.getSparkShims.unBase64FunctionFailsOnError(expr)) {
+    if (expr.failOnError) {
       GlutenExceptionUtil
         .throwsNotFullySupported(
           ExpressionNames.UNBASE64,
@@ -1093,12 +1093,14 @@ class BoltSparkPlanExecApi extends SparkPlanExecApi {
     PullOutArrowEvalPythonPreProjectHelper.pullOutPreProject(arrowEvalPythonExec)
   }
 
-  override def maybeCollapseTakeOrderedAndProject(plan: SparkPlan): SparkPlan = {
+  override def maybeCollapseTakeOrderedAndProject(
+      plan: SparkPlan,
+      metrics: Map[String, SQLMetric]): SparkPlan = {
     // This to-top-n optimization assumes exchange operators were already placed in input plan.
     plan.transformUp {
       case p @ LimitExecTransformer(SortExecTransformer(sortOrder, _, child, _), 0, count) =>
         val global = child.outputPartitioning.satisfies(AllTuples)
-        val topN = TopNTransformer(count, sortOrder, global, child)
+        val topN = TopNTransformer(count, sortOrder, global, child)(metrics)
         if (topN.doValidate().ok()) {
           topN
         } else {
@@ -1135,7 +1137,6 @@ class BoltSparkPlanExecApi extends SparkPlanExecApi {
       left: ExpressionTransformer,
       right: ExpressionTransformer,
       original: Expression): ExpressionTransformer = {
-    // Since spark 3.3.0
     val extract =
       SparkShimLoader.getSparkShims.extractExpressionTimestampAddUnit(original)
     if (extract.isEmpty) {
@@ -1149,13 +1150,12 @@ class BoltSparkPlanExecApi extends SparkPlanExecApi {
       left: ExpressionTransformer,
       right: ExpressionTransformer,
       original: Expression): ExpressionTransformer = {
-    // Since spark 3.3.0
-    val extract =
-      SparkShimLoader.getSparkShims.extractExpressionTimestampDiffUnit(original)
-    if (extract.isEmpty) {
-      throw new UnsupportedOperationException(s"Not support expression TimestampDiff.")
+    val unit = original match {
+      case timestampDiff: TimestampDiff => timestampDiff.unit
+      case _ =>
+        throw new UnsupportedOperationException("Not support expression TimestampDiff.")
     }
-    TimestampDiffTransformer(substraitExprName, extract.get, left, right, original)
+    TimestampDiffTransformer(substraitExprName, unit, left, right, original)
   }
 
   override def genToUnixTimestampTransformer(

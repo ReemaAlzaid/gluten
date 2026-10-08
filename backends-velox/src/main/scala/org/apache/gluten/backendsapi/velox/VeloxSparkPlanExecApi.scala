@@ -30,13 +30,13 @@ import org.apache.gluten.substrait.SubstraitContext
 import org.apache.gluten.substrait.expression.{ExpressionBuilder, ExpressionNode, WindowFunctionNode}
 import org.apache.gluten.vectorized.{ColumnarBatchSerializer, ColumnarBatchSerializeResult}
 
-import org.apache.spark.{ShuffleDependency, SparkEnv, SparkException}
+import org.apache.spark.{ShuffleDependency, SparkEnv}
 import org.apache.spark.api.python.{ColumnarArrowEvalPythonExec, PullOutArrowEvalPythonPreProjectHelper}
 import org.apache.spark.internal.Logging
-import org.apache.spark.memory.SparkMemoryUtil
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.shuffle.{GenShuffleReaderParameters, GenShuffleWriterParameters, GlutenShuffleReaderWrapper, GlutenShuffleWriterWrapper, VeloxShuffleUtils}
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions._
@@ -65,8 +65,7 @@ import org.apache.spark.task.TaskResources
 import io.substrait.proto.JoinRel
 import org.apache.commons.lang3.ClassUtils
 
-import javax.ws.rs.core.UriBuilder
-
+import java.net.URI
 import java.util.{ArrayList => JArrayList, List => JList}
 import java.util.Locale
 
@@ -470,7 +469,7 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
             }
           }
         }
-      case _: KeyGroupedPartitioning =>
+      case p if SparkShimLoader.getSparkShims.isKeyGroupedPartitioning(p) =>
         FallbackTags.add(
           shuffle,
           ValidationResult.failed(
@@ -887,10 +886,9 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
     val buildSideRowCount = serialized.map(_.numRows).sum
     val rawSize = serialized.map(_.sizeInBytes()).sum
     if (rawSize >= GlutenConfig.get.maxBroadcastTableSize) {
-      throw new SparkException(
-        "Cannot broadcast the table that is larger than " +
-          s"${SparkMemoryUtil.bytesToString(GlutenConfig.get.maxBroadcastTableSize)}: " +
-          s"${SparkMemoryUtil.bytesToString(rawSize)}")
+      throw BroadcastUtils.cannotBroadcastTableOverMaxTableBytesError(
+        GlutenConfig.get.maxBroadcastTableSize,
+        rawSize)
     }
     numOutputRows += buildSideRowCount
     dataSize += rawSize
@@ -1150,6 +1148,30 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
     GenericExpressionTransformer(substraitExprName, children, expr)
   }
 
+  override def genFormatNumberTransformer(
+      substraitExprName: String,
+      children: Seq[ExpressionTransformer],
+      expr: Expression): ExpressionTransformer = {
+    // Velox registers format_number only for integral and floating-point input with an integer
+    // number of decimal places. Reject the other Spark forms here so the fallback reason names
+    // the documented restriction instead of a generic native validation failure.
+    expr.children.head.dataType match {
+      case _: DecimalType =>
+        GlutenExceptionUtil.throwsNotFullySupported(
+          ExpressionNames.FORMAT_NUMBER,
+          FormatNumberRestrictions.NOT_SUPPORT_DECIMAL_INPUT)
+      case _ =>
+    }
+    expr.children(1).dataType match {
+      case _: StringType =>
+        GlutenExceptionUtil.throwsNotFullySupported(
+          ExpressionNames.FORMAT_NUMBER,
+          FormatNumberRestrictions.NOT_SUPPORT_STRING_FORMAT)
+      case _ =>
+    }
+    GenericExpressionTransformer(substraitExprName, children, expr)
+  }
+
   /** Generate an expression transformer to transform JsonToStructs to Substrait. */
   override def genFromJsonTransformer(
       substraitExprName: String,
@@ -1354,10 +1376,7 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
       case "local" =>
         path
       case "heap-over-local" =>
-        val rewritten = UriBuilder
-          .fromPath(path)
-          .scheme("jol")
-          .toString
+        val rewritten = new URI("jol", null, path, null, null).toString
         rewritten
       case other =>
         throw new IllegalStateException(s"Unsupported fs: $other")
@@ -1386,12 +1405,14 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
     PullOutArrowEvalPythonPreProjectHelper.pullOutPreProject(arrowEvalPythonExec)
   }
 
-  override def maybeCollapseTakeOrderedAndProject(plan: SparkPlan): SparkPlan = {
+  override def maybeCollapseTakeOrderedAndProject(
+      plan: SparkPlan,
+      metrics: Map[String, SQLMetric]): SparkPlan = {
     // This to-top-n optimization assumes exchange operators were already placed in input plan.
     plan.transformUp {
       case p @ LimitExecTransformer(SortExecTransformer(sortOrder, _, child, _), 0, count) =>
         val global = child.outputPartitioning.satisfies(AllTuples)
-        val topN = TopNTransformer(count, sortOrder, global, child)
+        val topN = TopNTransformer(count, sortOrder, global, child)(metrics)
         if (topN.doValidate().ok()) {
           topN
         } else {
@@ -1415,6 +1436,41 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
 
   override def genColumnarRangeExec(rangeExec: RangeExec): ColumnarRangeBaseExec =
     ColumnarRangeExec(rangeExec.range)
+
+  override def isSupportRDDScanExec(plan: RDDScanExec): Boolean = {
+    if (!VeloxConfig.get.enableRddScan) {
+      logDebug(
+        "RDDScan offload skipped: " +
+          s"${VeloxConfig.COLUMNAR_VELOX_RDD_SCAN_ENABLED.key}=false")
+      return false
+    }
+    // Exclude any scan planned within a Structured Streaming query (micro-batch or its
+    // foreachBatch callback). The per-batch source RDD is a materialized snapshot that
+    // otherwise slips past the plan-level logicalLink.isStreaming fallback, yet offloading
+    // it into a streaming/state-store pipeline can deadlock the micro-batch.
+    if (isWithinStreamingQuery) {
+      logDebug("RDDScan offload skipped: within a streaming query (micro-batch/foreachBatch)")
+      return false
+    }
+    true
+  }
+
+  /**
+   * Whether the current thread is planning/executing a Structured Streaming query -- including the
+   * `DataFrameWriter.foreachBatch` user callback, which Spark runs on the StreamExecution driver
+   * thread. That thread sets the `sql.streaming.queryId` local property
+   * (`StreamExecution.QUERY_ID_KEY`) for the whole lifetime of the query. We match on the literal
+   * key rather than referencing the class so this stays agnostic to the per-Spark-version package
+   * of `StreamExecution` across shims.
+   */
+  private def isWithinStreamingQuery: Boolean =
+    SparkSession.getActiveSession
+      .map(_.sparkContext)
+      .flatMap(sc => Option(sc.getLocalProperty("sql.streaming.queryId")))
+      .isDefined
+
+  override def getRDDScanTransform(plan: RDDScanExec): RDDScanTransformer =
+    VeloxRDDScanTransformer.replace(plan)
 
   override def genColumnarTailExec(limit: Int, child: SparkPlan): ColumnarCollectTailBaseExec =
     ColumnarCollectTailExec(limit, child)
@@ -1466,7 +1522,6 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
       left: ExpressionTransformer,
       right: ExpressionTransformer,
       original: Expression): ExpressionTransformer = {
-    // Since spark 3.3.0
     val extract =
       SparkShimLoader.getSparkShims.extractExpressionTimestampAddUnit(original)
     if (extract.isEmpty) {
