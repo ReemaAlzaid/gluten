@@ -515,13 +515,24 @@ if(ENABLE_KAFKA)
         message(STATUS "Found librdkafka via pkg-config: ${RDKAFKA_LIBRARIES}")
         target_link_libraries(velox PUBLIC PkgConfig::RDKAFKA)
       else()
-        message(FATAL_ERROR "ENABLE_KAFKA is ON but librdkafka was not found.")
+        message(
+          FATAL_ERROR
+            "ENABLE_KAFKA is ON but the librdkafka C++ library was not found. "
+            "Install librdkafka-dev (Ubuntu/Debian), librdkafka-devel (RPM-based "
+            "Linux), or librdkafka (Homebrew). For an existing installation, "
+            "set RdKafka_DIR or CMAKE_PREFIX_PATH to locate its CMake package, "
+            "or PKG_CONFIG_PATH to the directory containing rdkafka++.pc. "
+            "To build without Kafka, pass --enable_kafka=OFF to the build script "
+            "or -DENABLE_KAFKA=OFF to CMake.")
       endif()
     else()
       message(
         FATAL_ERROR
-          "ENABLE_KAFKA is ON but pkg-config was not found to locate librdkafka."
-      )
+          "ENABLE_KAFKA is ON but the librdkafka C++ CMake target was not found "
+          "and pkg-config is unavailable. Install pkg-config, or set RdKafka_DIR "
+          "or CMAKE_PREFIX_PATH to an installation providing RdKafka::rdkafka++. "
+          "To build without Kafka, pass --enable_kafka=OFF to the build script "
+          "or -DENABLE_KAFKA=OFF to CMake.")
     endif()
   endif()
 endif()
