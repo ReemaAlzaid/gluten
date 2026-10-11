@@ -23,6 +23,7 @@ import org.apache.gluten.expression._
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.SubstraitContext
 import org.apache.gluten.substrait.expression.WindowFunctionNode
+import org.apache.gluten.utils.DecimalArithmeticUtil
 
 import org.apache.spark.ShuffleDependency
 import org.apache.spark.rdd.RDD
@@ -273,6 +274,18 @@ trait SparkPlanExecApi {
   // (e.g. ClickHouse) do not use the _deny_precision_loss naming convention; they handle
   // decimal precision through their own mechanisms. VeloxSparkPlanExecApi overrides this.
   def getDecimalArithmeticExprName(exprName: String, allowPrecisionLoss: Boolean): String = exprName
+
+  def genDecimalArithmeticTransformer(
+      substraitExprName: String,
+      left: ExpressionTransformer,
+      right: ExpressionTransformer,
+      original: BinaryArithmetic): ExpressionTransformer = {
+    val resultType = DecimalArithmeticUtil.getResultType(
+      original,
+      original.left.dataType.asInstanceOf[DecimalType],
+      original.right.dataType.asInstanceOf[DecimalType])
+    DecimalArithmeticExpressionTransformer(substraitExprName, left, right, resultType, original)
+  }
 
   /** Transform map_entries to Substrait. */
   def genMapEntriesTransformer(

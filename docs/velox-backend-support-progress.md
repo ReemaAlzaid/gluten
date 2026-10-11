@@ -113,6 +113,19 @@ Use the following command to generate and update the support status:
 python3 tools/scripts/gen-function-support-docs.py --spark_home=/path/to/spark_source_code
 ```
 
+### Decimal PMOD
+
+Native decimal `pmod` requires a Velox build that provides the decimal signatures of `checked_pmod` and
+`checked_pmod_deny_precision_loss`. Older native builds fall back to Spark during plan validation. Decimal
+`pmod` also falls back when `spark.gluten.sql.enable.native.validation=false`, since its native capability
+cannot then be checked. The existing ANSI fallback setting still applies.
+
+Operands are currently limited to decimal columns and literals. Computed operands fall back to preserve
+Spark's evaluation order: a null divisor, or a zero divisor in legacy mode, can skip evaluation of the
+dividend. The native operation preserves the expression's captured ANSI mode even when the session setting
+changes after planning. Zero divisors and decimal result overflow produce null in legacy mode and an error
+in ANSI mode. Decimal remainder (`%`) support is unchanged.
+
 Please check the links below for the detailed support status of each category:
 
 [Scalar Functions Support Status](./velox-backend-scalar-function-support.md)
