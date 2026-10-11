@@ -317,6 +317,13 @@ object ExpressionConverter extends SQLConfHelper with Logging {
         val children =
           c.children.map(replaceWithExpressionTransformer0(_, attributeSeq, expressionsMap))
         CreateMapTransformer(substraitExprName, children, c)
+      case ea: ElementAt =>
+        BackendsApiManager.getSparkPlanExecApiInstance.genElementAtTransformer(
+          substraitExprName,
+          replaceWithExpressionTransformer0(ea.left, attributeSeq, expressionsMap),
+          replaceWithExpressionTransformer0(ea.right, attributeSeq, expressionsMap),
+          ea
+        )
       case g: GetMapValue =>
         BackendsApiManager.getSparkPlanExecApiInstance.genGetMapValueTransformer(
           substraitExprName,
@@ -662,6 +669,7 @@ object ExpressionConverter extends SQLConfHelper with Logging {
       case b: BinaryArithmetic if DecimalArithmeticUtil.isDecimalArithmetic(b) =>
         val exprName = BackendsApiManager.getSparkPlanExecApiInstance.getDecimalArithmeticExprName(
           substraitExprName,
+          b,
           SparkShimLoader.getSparkShims.decimalAllowPrecisionLoss(b))
         if (!BackendsApiManager.getSettings.transformCheckOverflow) {
           GenericExpressionTransformer(
@@ -686,8 +694,17 @@ object ExpressionConverter extends SQLConfHelper with Logging {
           a
         )
       case m: MakeTimestamp =>
+        // The 4 make_timestamp* builtins share this class; resolve the name from
+        // dataType/failOnError since the static expressionsMap can't.
+        val isNtz = m.dataType.typeName == "timestamp_ntz"
+        val makeTimestampExprName = (isNtz, m.failOnError) match {
+          case (true, true) => ExpressionNames.MAKE_TIMESTAMP_NTZ
+          case (true, false) => ExpressionNames.TRY_MAKE_TIMESTAMP_NTZ
+          case (false, true) => ExpressionNames.MAKE_TIMESTAMP
+          case (false, false) => ExpressionNames.TRY_MAKE_TIMESTAMP
+        }
         BackendsApiManager.getSparkPlanExecApiInstance.genMakeTimestampTransformer(
-          substraitExprName,
+          makeTimestampExprName,
           m.children.map(replaceWithExpressionTransformer0(_, attributeSeq, expressionsMap)),
           m)
       case tsAdd: BinaryExpression if tsAdd.getClass.getSimpleName.equals("TimestampAdd") =>

@@ -31,7 +31,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.execution.{ExplainUtils, OrderPreservingNodeShim, PartitioningPreservingNodeShim, ProjectExec, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.{ExplainUtils, OrderPreservingUnaryExecNode, PartitioningPreservingUnaryExecNode, ProjectExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.hive.{HiveUDFTransformer, VeloxHiveUDFTransformer}
 import org.apache.spark.sql.types.DecimalType
@@ -56,8 +56,8 @@ import scala.collection.mutable.ListBuffer
 case class ColumnarPartialProjectExec(projectList: Seq[Expression], child: SparkPlan)(
     replacedAlias: Seq[Alias])
   extends UnaryExecNode
-  with OrderPreservingNodeShim
-  with PartitioningPreservingNodeShim
+  with OrderPreservingUnaryExecNode
+  with PartitioningPreservingUnaryExecNode
   with ValidatablePlan {
 
   private val projectAttributes: ListBuffer[Attribute] = ListBuffer()
