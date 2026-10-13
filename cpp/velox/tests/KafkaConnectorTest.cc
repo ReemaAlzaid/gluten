@@ -63,8 +63,8 @@ class KafkaConnectorTest : public ::testing::Test, public test::VectorTestBase {
             RD_KAFKA_V_TOPIC(kTopic),
             RD_KAFKA_V_PARTITION(0),
             RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
-            RD_KAFKA_V_KEY(key ? key->data() : nullptr, key ? key->size() : 0),
-            RD_KAFKA_V_VALUE(value ? const_cast<char*>(value->data()) : nullptr, value ? value->size() : 0),
+            RD_KAFKA_V_KEY((key ? key->data() : nullptr), (key ? key->size() : 0)),
+            RD_KAFKA_V_VALUE((value ? const_cast<char*>(value->data()) : nullptr), (value ? value->size() : 0)),
             RD_KAFKA_V_END),
         RD_KAFKA_RESP_ERR_NO_ERROR);
     ASSERT_EQ(rd_kafka_flush(producer_, 10'000), RD_KAFKA_RESP_ERR_NO_ERROR);
