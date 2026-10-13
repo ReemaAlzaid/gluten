@@ -57,6 +57,7 @@ class KafkaConnectorTest : public ::testing::Test, public test::VectorTestBase {
   }
 
   void produce(const std::optional<std::string>& key, const std::optional<std::string>& value) {
+    // librdkafka's macros cast arguments without grouping them, so parenthesize each conditional.
     ASSERT_EQ(
         rd_kafka_producev(
             producer_,

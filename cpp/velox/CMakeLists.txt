@@ -508,35 +508,39 @@ set(CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES_BCK})
 # Find and link librdkafka for Kafka streaming support
 if(ENABLE_KAFKA)
   target_compile_definitions(velox PUBLIC ENABLE_KAFKA)
+  # KafkaConnectorTest uses the C mock API directly. Shared-library linkers
+  # require librdkafka on the link line, even when librdkafka++ depends on it.
   find_package(RdKafka CONFIG QUIET)
-  if(RdKafka_FOUND AND TARGET RdKafka::rdkafka++)
+  if(RdKafka_FOUND
+     AND TARGET RdKafka::rdkafka++
+     AND TARGET RdKafka::rdkafka)
     message(STATUS "Found RdKafka: ${RdKafka_DIR}")
-    target_link_libraries(velox PUBLIC RdKafka::rdkafka++)
+    target_link_libraries(velox PUBLIC RdKafka::rdkafka++ RdKafka::rdkafka)
   else()
     # Try to find librdkafka using pkg-config
     find_package(PkgConfig QUIET)
     if(PKG_CONFIG_FOUND)
-      pkg_check_modules(RDKAFKA QUIET IMPORTED_TARGET rdkafka++)
+      pkg_check_modules(RDKAFKA QUIET IMPORTED_TARGET rdkafka++ rdkafka)
       if(RDKAFKA_FOUND)
         message(STATUS "Found librdkafka via pkg-config: ${RDKAFKA_LIBRARIES}")
         target_link_libraries(velox PUBLIC PkgConfig::RDKAFKA)
       else()
         message(
           FATAL_ERROR
-            "ENABLE_KAFKA is ON but the librdkafka C++ library was not found. "
+            "ENABLE_KAFKA is ON but the librdkafka C and C++ libraries were not found. "
             "Install librdkafka-dev (Ubuntu/Debian), librdkafka-devel (RPM-based "
             "Linux), or librdkafka (Homebrew). For an existing installation, "
             "set RdKafka_DIR or CMAKE_PREFIX_PATH to locate its CMake package, "
-            "or PKG_CONFIG_PATH to the directory containing rdkafka++.pc. "
+            "or PKG_CONFIG_PATH to the directory containing rdkafka.pc and rdkafka++.pc. "
             "To build without Kafka, pass --enable_kafka=OFF to the build script "
             "or -DENABLE_KAFKA=OFF to CMake.")
       endif()
     else()
       message(
         FATAL_ERROR
-          "ENABLE_KAFKA is ON but the librdkafka C++ CMake target was not found "
+          "ENABLE_KAFKA is ON but the librdkafka C and C++ CMake targets were not found "
           "and pkg-config is unavailable. Install pkg-config, or set RdKafka_DIR "
-          "or CMAKE_PREFIX_PATH to an installation providing RdKafka::rdkafka++. "
+          "or CMAKE_PREFIX_PATH to an installation providing RdKafka::rdkafka and RdKafka::rdkafka++. "
           "To build without Kafka, pass --enable_kafka=OFF to the build script "
           "or -DENABLE_KAFKA=OFF to CMake.")
     endif()
