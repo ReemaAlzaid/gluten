@@ -258,7 +258,8 @@ VectorPtr KafkaDataSource::makeColumn(
         const auto& msg = *messages[i];
         // FlatVector<StringView>::set copies non-inlined strings into the vector's buffers.
         if (field == KafkaField::kTopic) {
-          vector->set(i, StringView(msg.topic_name()));
+          const auto topic = msg.topic_name();
+          vector->set(i, StringView(topic));
         } else if (field == KafkaField::kKey) {
           if (msg.key_pointer() == nullptr) {
             vector->setNull(i, true);
