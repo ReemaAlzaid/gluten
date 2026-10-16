@@ -71,17 +71,14 @@ class KafkaConnectorTest : public ::testing::Test, public test::VectorTestBase {
     ASSERT_EQ(rd_kafka_flush(producer_, 10'000), RD_KAFKA_RESP_ERR_NO_ERROR);
   }
 
-  std::shared_ptr<KafkaConnectorSplit> split(int64_t start, int64_t end, bool failOnDataLoss = true) {
+  std::shared_ptr<KafkaConnectorSplit> split(
+      int64_t start,
+      int64_t end,
+      bool failOnDataLoss = true,
+      std::unordered_map<std::string, std::string> kafkaParams = {}) {
+    kafkaParams.emplace("bootstrap.servers", rd_kafka_mock_cluster_bootstraps(cluster_));
     return std::make_shared<KafkaConnectorSplit>(
-        kConnectorId,
-        kTopic,
-        0,
-        start,
-        end,
-        10'000,
-        failOnDataLoss,
-        std::unordered_map<std::string, std::string>{
-            {"bootstrap.servers", rd_kafka_mock_cluster_bootstraps(cluster_)}});
+        kConnectorId, kTopic, 0, start, end, 10'000, failOnDataLoss, std::move(kafkaParams));
   }
 
   std::unique_ptr<KafkaDataSource> source(const RowTypePtr& type) {
@@ -173,6 +170,46 @@ TEST_F(KafkaConnectorTest, offsetOutOfRange) {
   ignoreDataLoss->addSplit(split(100, 101, false));
   EXPECT_EQ(ignoreDataLoss->next(1, future).value(), nullptr);
   EXPECT_EQ(ignoreDataLoss->getCompletedRows(), 0);
+}
+
+TEST_F(KafkaConnectorTest, missingLogTail) {
+  produce("key", "value");
+  ContinueFuture future = ContinueFuture::makeEmpty();
+  for (const auto* isolationLevel : {"read_uncommitted", "read_committed"}) {
+    SCOPED_TRACE(isolationLevel);
+    const std::unordered_map<std::string, std::string> params{{"isolation.level", isolationLevel}};
+    auto reader = source(ROW({"offset"}, {BIGINT()}));
+    // Emulate a split planned before the log was truncated: offset 0 still exists, but 1 does not.
+    reader->addSplit(split(0, 2, false, params));
+    auto batch = reader->next(10, future).value();
+    ASSERT_NE(batch, nullptr);
+    ASSERT_EQ(batch->size(), 1);
+    EXPECT_EQ(batch->childAt(0)->as<FlatVector<int64_t>>()->valueAt(0), 0);
+    EXPECT_EQ(reader->next(1, future).value(), nullptr);
+    EXPECT_EQ(reader->getCompletedRows(), 1);
+
+    // Completing the truncated range must release the split and allow another one.
+    reader->addSplit(split(0, 1, true, params));
+    ASSERT_NE(reader->next(1, future).value(), nullptr);
+    EXPECT_EQ(reader->next(1, future).value(), nullptr);
+
+    auto failOnDataLoss = source(ROW({"offset"}, {BIGINT()}));
+    failOnDataLoss->addSplit(split(0, 2, true, params));
+    ASSERT_NE(failOnDataLoss->next(1, future).value(), nullptr);
+    VELOX_ASSERT_THROW(failOnDataLoss->next(1, future), "Some data may have been lost");
+  }
+}
+
+TEST_F(KafkaConnectorTest, missingLogTailWithoutRecords) {
+  ContinueFuture future = ContinueFuture::makeEmpty();
+  auto reader = source(ROW({"offset"}, {BIGINT()}));
+  reader->addSplit(split(0, 1, false));
+  EXPECT_EQ(reader->next(1, future).value(), nullptr);
+  EXPECT_EQ(reader->getCompletedRows(), 0);
+
+  auto failOnDataLoss = source(ROW({"offset"}, {BIGINT()}));
+  failOnDataLoss->addSplit(split(0, 1));
+  VELOX_ASSERT_THROW(failOnDataLoss->next(1, future), "Some data may have been lost");
 }
 
 TEST_F(KafkaConnectorTest, invalidKafkaProperty) {

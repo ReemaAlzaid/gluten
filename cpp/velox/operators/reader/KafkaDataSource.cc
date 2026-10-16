@@ -22,6 +22,7 @@
 #include <limits>
 
 #include <glog/logging.h>
+#include <librdkafka/rdkafka.h>
 #include <librdkafka/rdkafkacpp.h>
 
 #include "velox/vector/FlatVector.h"
@@ -48,6 +49,50 @@ void setProperty(RdKafka::Conf& conf, const std::string& key, const std::string&
   std::string errstr;
   VELOX_CHECK(
       conf.set(key, value, errstr) == RdKafka::Conf::CONF_OK, "Failed to set Kafka property {}: {}", key, errstr);
+}
+
+int64_t getLogEndOffset(RdKafka::KafkaConsumer& consumer, const std::string& topic, int32_t partition, int timeoutMs) {
+  auto* client = consumer.c_ptr();
+  std::unique_ptr<rd_kafka_AdminOptions_t, decltype(&rd_kafka_AdminOptions_destroy)> options(
+      rd_kafka_AdminOptions_new(client, RD_KAFKA_ADMIN_OP_LISTOFFSETS), rd_kafka_AdminOptions_destroy);
+  char errstr[512];
+  const auto err = rd_kafka_AdminOptions_set_request_timeout(options.get(), timeoutMs, errstr, sizeof(errstr));
+  VELOX_CHECK(err == RD_KAFKA_RESP_ERR_NO_ERROR, "Failed to set Kafka offset request timeout: {}", errstr);
+  std::unique_ptr<rd_kafka_error_t, decltype(&rd_kafka_error_destroy)> isolationError(
+      rd_kafka_AdminOptions_set_isolation_level(options.get(), RD_KAFKA_ISOLATION_LEVEL_READ_UNCOMMITTED),
+      rd_kafka_error_destroy);
+  if (isolationError) {
+    VELOX_FAIL("Failed to set Kafka offset request isolation: {}", rd_kafka_error_string(isolationError.get()));
+  }
+  std::unique_ptr<rd_kafka_topic_partition_list_t, decltype(&rd_kafka_topic_partition_list_destroy)> partitions(
+      rd_kafka_topic_partition_list_new(1), rd_kafka_topic_partition_list_destroy);
+  rd_kafka_topic_partition_list_add(partitions.get(), topic.c_str(), partition)->offset = RD_KAFKA_OFFSET_SPEC_LATEST;
+  std::unique_ptr<rd_kafka_queue_t, decltype(&rd_kafka_queue_destroy)> queue(
+      rd_kafka_queue_new(client), rd_kafka_queue_destroy);
+  rd_kafka_ListOffsets(client, partitions.get(), options.get(), queue.get());
+  std::unique_ptr<rd_kafka_event_t, decltype(&rd_kafka_event_destroy)> event(
+      rd_kafka_queue_poll(queue.get(), timeoutMs), rd_kafka_event_destroy);
+  VELOX_CHECK_NOT_NULL(event, "Timed out getting Kafka log end offset for {}-{}", topic, partition);
+  VELOX_CHECK(
+      rd_kafka_event_error(event.get()) == RD_KAFKA_RESP_ERR_NO_ERROR,
+      "Failed to get Kafka log end offset for {}-{}: {}",
+      topic,
+      partition,
+      rd_kafka_event_error_string(event.get()));
+  const auto* result = rd_kafka_event_ListOffsets_result(event.get());
+  VELOX_CHECK_NOT_NULL(result, "Missing Kafka log end offset result for {}-{}", topic, partition);
+  size_t count = 0;
+  const auto** infos = rd_kafka_ListOffsets_result_infos(result, &count);
+  VELOX_CHECK_EQ(count, 1, "Expected one Kafka log end offset result");
+  const auto* info = rd_kafka_ListOffsetsResultInfo_topic_partition(infos[0]);
+  VELOX_CHECK(
+      info->err == RD_KAFKA_RESP_ERR_NO_ERROR,
+      "Failed to get Kafka log end offset for {}-{}: {}",
+      topic,
+      partition,
+      rd_kafka_err2str(info->err));
+  VELOX_CHECK_GE(info->offset, 0, "Invalid Kafka log end offset for {}-{}", topic, partition);
+  return info->offset;
 }
 
 int32_t toSparkTimestampType(RdKafka::MessageTimestamp::MessageTimestampType type) {
@@ -173,11 +218,30 @@ std::vector<std::unique_ptr<RdKafka::Message>> KafkaDataSource::poll(uint64_t ma
         splitDone_ = nextOffset_ >= split_->endOffset;
         break;
       }
-      case RdKafka::ERR__PARTITION_EOF:
-        // The offset of an EOF event is the log end offset. Offsets below it without a record are
-        // compacted records or transaction markers.
+      case RdKafka::ERR__PARTITION_EOF: {
+        // Offsets below EOF without a record are compacted records or transaction markers.
         splitDone_ = msg->offset() >= split_->endOffset;
+        if (!splitDone_) {
+          // A read_committed EOF can be the last stable offset, or a follower can lag the leader.
+          // Query the leader's physical log end before treating the missing tail as data loss.
+          const auto timeoutMs = static_cast<int>(std::min<int64_t>(pollTimeoutMs, std::numeric_limits<int>::max()));
+          const auto logEndOffset = getLogEndOffset(*consumer_, split_->topic, split_->partition, timeoutMs);
+          if (logEndOffset < split_->endOffset) {
+            VELOX_USER_CHECK(
+                !split_->failOnDataLoss,
+                "Kafka offsets [{}, {}) of {}-{} are no longer available. Some data may have been lost. "
+                "Set the source option failOnDataLoss to false to ignore this.",
+                logEndOffset,
+                split_->endOffset,
+                split_->topic,
+                split_->partition);
+            LOG(WARNING) << "Kafka offsets [" << logEndOffset << ", " << split_->endOffset << ") of " << split_->topic
+                         << "-" << split_->partition << " are no longer available";
+            splitDone_ = true;
+          }
+        }
         break;
+      }
       case RdKafka::ERR__TIMED_OUT:
         if (!messages.empty()) {
           return messages;
