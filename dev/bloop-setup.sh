@@ -288,7 +288,7 @@ if 'project' in config:
 
 with open('$config_file', 'w') as f:
     json.dump(config, f, indent=2)
-" 2>/dev/null && ((INJECTED_COUNT++))
+" 2>/dev/null && ((++INJECTED_COUNT))
   fi
 done
 
