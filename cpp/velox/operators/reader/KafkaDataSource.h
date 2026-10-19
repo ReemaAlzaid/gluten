@@ -63,6 +63,8 @@ class KafkaDataSource : public facebook::velox::connector::DataSource {
   }
 
  private:
+  friend class KafkaConnectorTest;
+
   // Polls up to 'maxRows' messages of the current split. Sets 'splitDone_' once the end offset is
   // reached.
   std::vector<std::unique_ptr<RdKafka::Message>> poll(uint64_t maxRows);

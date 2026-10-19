@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include <librdkafka/rdkafka.h>
 #include <librdkafka/rdkafka_mock.h>
+#include <librdkafka/rdkafkacpp.h>
 
 #include "operators/reader/KafkaConnector.h"
 #include "operators/reader/KafkaDataSource.h"
@@ -32,6 +33,106 @@ namespace {
 
 constexpr char kConnectorId[] = "kafka-test";
 constexpr char kTopic[] = "native-kafka-test";
+
+// Supply metadata independently of the mock broker's timestamp support.
+class KafkaMetadataMessage final : public RdKafka::Message {
+ public:
+  KafkaMetadataMessage(
+      int32_t partition,
+      RdKafka::MessageTimestamp::MessageTimestampType timestampType,
+      int64_t timestamp)
+      : partition_(partition), timestamp_{timestampType, timestamp} {}
+
+  int32_t partition() const override {
+    return partition_;
+  }
+
+  RdKafka::MessageTimestamp timestamp() const override {
+    return timestamp_;
+  }
+
+  std::string errstr() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::ErrorCode err() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::Topic* topic() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  std::string topic_name() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  void* payload() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  size_t len() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  const std::string* key() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  const void* key_pointer() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  size_t key_len() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  int64_t offset() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  void* msg_opaque() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  int64_t latency() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  rd_kafka_message_t* c_ptr() override {
+    VELOX_UNREACHABLE();
+  }
+
+  Status status() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::Headers* headers() override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::Headers* headers(RdKafka::ErrorCode* /*error*/) override {
+    VELOX_UNREACHABLE();
+  }
+
+  int32_t broker_id() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  int32_t leader_epoch() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::Error* offset_store() override {
+    VELOX_UNREACHABLE();
+  }
+
+ private:
+  const int32_t partition_;
+  const RdKafka::MessageTimestamp timestamp_;
+};
+
+} // namespace
 
 class KafkaConnectorTest : public ::testing::Test, public test::VectorTestBase {
  protected:
@@ -89,6 +190,10 @@ class KafkaConnectorTest : public ::testing::Test, public test::VectorTestBase {
     return std::make_unique<KafkaDataSource>(type, columns, pool());
   }
 
+  RowVectorPtr toRowVector(KafkaDataSource& reader, const std::vector<std::unique_ptr<RdKafka::Message>>& messages) {
+    return reader.toRowVector(messages);
+  }
+
   rd_kafka_t* producer_{nullptr};
   rd_kafka_mock_cluster_t* cluster_{nullptr};
 };
@@ -97,6 +202,39 @@ TEST_F(KafkaConnectorTest, columnValidation) {
   EXPECT_EQ(KafkaColumnHandle("timestampType", INTEGER()).field(), KafkaField::kTimestampType);
   VELOX_ASSERT_THROW(KafkaColumnHandle("offset", VARCHAR()), "Kafka column offset must be of type BIGINT");
   VELOX_ASSERT_THROW(KafkaColumnHandle("headers", VARBINARY()), "Unsupported Kafka column: headers");
+}
+
+TEST_F(KafkaConnectorTest, projectedPartitionAndTimestampMetadata) {
+  using TimestampType = RdKafka::MessageTimestamp;
+  std::vector<std::unique_ptr<RdKafka::Message>> messages;
+  messages.push_back(
+      std::make_unique<KafkaMetadataMessage>(3, TimestampType::MSG_TIMESTAMP_CREATE_TIME, 1'700'000'000'123));
+  messages.push_back(
+      std::make_unique<KafkaMetadataMessage>(7, TimestampType::MSG_TIMESTAMP_LOG_APPEND_TIME, 1'700'000'456'789));
+  messages.push_back(std::make_unique<KafkaMetadataMessage>(11, TimestampType::MSG_TIMESTAMP_NOT_AVAILABLE, -1));
+
+  // Prune and reorder the metadata columns from Spark's Kafka schema.
+  auto reader = source(ROW({"timestampType", "partition", "timestamp"}, {INTEGER(), INTEGER(), TIMESTAMP()}));
+  auto batch = toRowVector(*reader, messages);
+  ASSERT_EQ(batch->size(), 3);
+
+  const std::vector<int32_t> expectedTypes{0, 1, -1};
+  const std::vector<int32_t> expectedPartitions{3, 7, 11};
+  // Spark converts the unavailable -1 ms sentinel to a non-null timestamp.
+  const std::vector<Timestamp> expectedTimestamps{
+      Timestamp(1'700'000'000, 123'000'000), Timestamp(1'700'000'456, 789'000'000), Timestamp(-1, 999'000'000)};
+  auto* timestampTypes = batch->childAt(0)->as<FlatVector<int32_t>>();
+  auto* partitions = batch->childAt(1)->as<FlatVector<int32_t>>();
+  auto* timestamps = batch->childAt(2)->as<FlatVector<Timestamp>>();
+  for (vector_size_t row = 0; row < batch->size(); ++row) {
+    SCOPED_TRACE(row);
+    ASSERT_FALSE(timestampTypes->isNullAt(row));
+    ASSERT_FALSE(partitions->isNullAt(row));
+    ASSERT_FALSE(timestamps->isNullAt(row));
+    EXPECT_EQ(timestampTypes->valueAt(row), expectedTypes[row]);
+    EXPECT_EQ(partitions->valueAt(row), expectedPartitions[row]);
+    EXPECT_EQ(timestamps->valueAt(row), expectedTimestamps[row]);
+  }
 }
 
 TEST_F(KafkaConnectorTest, emptyAndConsecutiveSplits) {
@@ -226,5 +364,4 @@ TEST_F(KafkaConnectorTest, invalidKafkaProperty) {
   VELOX_ASSERT_THROW(reader->addSplit(invalid), "Invalid Kafka property isolation.level");
 }
 
-} // namespace
 } // namespace gluten
