@@ -20,6 +20,8 @@
 #include <string>
 #include <unordered_map>
 
+#include <fmt/format.h>
+
 #include "velox/connectors/Connector.h"
 
 namespace gluten {
