@@ -137,8 +137,20 @@ class CudfVectorStream : public CudfVectorStreamBase {
       return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
           vp->pool(), outputType_, vp->size(), std::move(table), stream);
     }
+    // GPU broadcast deserialization can retain the same extra join-key columns.
+    VELOX_CHECK_GE(
+        cudfVector->getTableView().num_columns(),
+        outputType_->size(),
+        "Value stream batch has fewer columns than the declared output type");
+    auto stream = cudfVector->stream();
+    auto table = cudfVector->release();
+    if (table->num_columns() > outputType_->size()) {
+      auto columns = table->release();
+      columns.resize(outputType_->size());
+      table = std::make_unique<cudf::table>(std::move(columns));
+    }
     return std::make_shared<facebook::velox::cudf_velox::CudfVector>(
-        vp->pool(), outputType_, vp->size(), cudfVector->release(), cudfVector->stream());
+        vp->pool(), outputType_, vp->size(), std::move(table), stream);
   }
 };
 

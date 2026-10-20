@@ -53,7 +53,7 @@ class GlutenSQLQuerySuite extends SQLQuerySuite with GlutenSQLTestsTrait {
           for (cudfEnabled <- cudfModes; buildOnce <- Seq(true, false)) {
             withClue(s"cuDF=$cudfEnabled, buildOnce=$buildOnce: ") {
               withSQLConf(
-                // Keep execution on CPU while checking the cuDF broadcast schema on CPU CI.
+                // Exercise CPU execution with both cuDF broadcast settings on CPU CI.
                 SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
                 SQLConf.SHUFFLE_PARTITIONS.key -> "2",
                 SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "134217728",
@@ -80,8 +80,8 @@ class GlutenSQLQuerySuite extends SQLQuerySuite with GlutenSQLTestsTrait {
                   val exchange = exchanges.head
                   val relation = exchange.doExecuteBroadcast[BuildSideRelation]().value
                   val outputTypes = exchange.output.map(_.dataType)
-                  val expectedColumns = outputTypes.size +
-                    (if (!cudfEnabled && buildOnce) 1 else 0)
+                  // Broadcast preprojection appends the expression key in either cuDF mode.
+                  val expectedColumns = outputTypes.size + (if (buildOnce) 1 else 0)
 
                   TaskResources.runUnsafe {
                     // The iterator recycles loaded batches and closes its serializer when drained.

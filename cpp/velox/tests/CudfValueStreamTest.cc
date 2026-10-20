@@ -176,5 +176,31 @@ TEST_F(CudfValueStreamTest, preservesGpuBatchAndStream) {
   EXPECT_EQ(task->next(&future), nullptr);
 }
 
+TEST_F(CudfValueStreamTest, trimsExtraGpuColumns) {
+  auto host = makeRowVector(
+      {"id", "col_0"},
+      {makeNullableFlatVector<int64_t>({10, std::nullopt, 30}), makeFlatVector<int64_t>({11, 21, 31})});
+  auto outputType = ROW({"renamed_id"}, {BIGINT()});
+  auto expected = makeRowVector({"renamed_id"}, {host->childAt(0)});
+  auto stream = cudf_velox::cudfGlobalStreamPool().get_stream();
+  auto table = cudf_velox::with_arrow::toCudfTable(host, pool(), stream, cudf_velox::get_output_mr());
+  const auto* data = table->view().column(0).head<int64_t>();
+  auto batch = std::make_shared<cudf_velox::CudfVector>(pool(), host->type(), host->size(), std::move(table), stream);
+  auto task = makeTask({batch}, outputType);
+
+  ContinueFuture future = ContinueFuture::makeEmpty();
+  auto output = task->next(&future);
+  ASSERT_NE(output, nullptr);
+  auto cudfVector = std::dynamic_pointer_cast<cudf_velox::CudfVector>(output);
+  ASSERT_NE(cudfVector, nullptr);
+  EXPECT_EQ(cudfVector->type(), outputType);
+  EXPECT_EQ(cudfVector->size(), host->size());
+  EXPECT_EQ(cudfVector->stream(), stream);
+  ASSERT_EQ(cudfVector->getTableView().num_columns(), 1);
+  EXPECT_EQ(cudfVector->getTableView().column(0).head<int64_t>(), data);
+  assertGpuValues(expected, cudfVector);
+  EXPECT_EQ(task->next(&future), nullptr);
+}
+
 } // namespace
 } // namespace facebook::velox::test
