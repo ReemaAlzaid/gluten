@@ -52,7 +52,8 @@ class CudfFunctionsTest : public ::testing::Test, public test::VectorTestBase {
     auto stream = cudf_velox::cudfGlobalStreamPool().get_stream();
     auto mr = cudf_velox::get_output_mr();
     auto cudfTable = cudf_velox::with_arrow::toCudfTable(input, pool_.get(), stream, mr);
-    auto evaluator = cudf_velox::createCudfExpression(expr, input->rowType(), pool_.get());
+    core::QueryConfig queryConfig{{}};
+    auto evaluator = cudf_velox::createCudfExpression(expr, input->rowType(), pool_.get(), queryConfig);
 
     auto ownedColumns = cudfTable->release();
     std::vector<cudf::column_view> inputViews;
