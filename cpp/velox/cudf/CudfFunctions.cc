@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#include "cudf/GlutenCudfFunctions.h"
+#include "cudf/CudfFunctions.h"
 
 #include "operators/functions/RowConstructorWithNull.h"
 #include "velox/common/base/Exceptions.h"
@@ -83,7 +83,7 @@ bool canEvaluateRowConstructorWithNull(const TypedExprPtr& expr) {
 
 } // namespace
 
-void registerGlutenCudfFunctions() {
+void registerCudfFunctions() {
   facebook::velox::cudf_velox::registerCudfFunction(
       RowConstructorWithNullCallToSpecialForm::kRowConstructorWithNull,
       [](const std::string&,

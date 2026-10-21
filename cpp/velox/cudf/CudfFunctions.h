@@ -20,6 +20,6 @@
 namespace gluten {
 
 /// Registers Gluten-specific cuDF expression implementations.
-void registerGlutenCudfFunctions();
+void registerCudfFunctions();
 
 } // namespace gluten

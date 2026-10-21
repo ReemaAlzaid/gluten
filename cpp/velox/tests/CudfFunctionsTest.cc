@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#include "cudf/GlutenCudfFunctions.h"
+#include "cudf/CudfFunctions.h"
 #include "operators/functions/RowConstructorWithNull.h"
 #include "velox/experimental/cudf/exec/GpuResources.h"
 #include "velox/experimental/cudf/exec/ToCudf.h"
@@ -35,12 +35,12 @@ namespace {
 
 using namespace facebook::velox;
 
-class GlutenCudfFunctionsTest : public ::testing::Test, public test::VectorTestBase {
+class CudfFunctionsTest : public ::testing::Test, public test::VectorTestBase {
  protected:
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
     cudf_velox::registerCudf();
-    registerGlutenCudfFunctions();
+    registerCudfFunctions();
   }
 
   static void TearDownTestCase() {
@@ -81,7 +81,7 @@ class GlutenCudfFunctionsTest : public ::testing::Test, public test::VectorTestB
   }
 };
 
-TEST_F(GlutenCudfFunctionsTest, rowConstructorWithNull) {
+TEST_F(CudfFunctionsTest, rowConstructorWithNull) {
   auto integers = makeNullableFlatVector<int32_t>({1, std::nullopt, 3, std::nullopt});
   auto strings = makeNullableFlatVector<std::string>({"a", "b", std::nullopt, std::nullopt});
   auto input = makeRowVector({"c0", "c1"}, {integers, strings});
@@ -108,7 +108,7 @@ TEST_F(GlutenCudfFunctionsTest, rowConstructorWithNull) {
   test::assertEqualVectors(expected, actual);
 }
 
-TEST_F(GlutenCudfFunctionsTest, rowConstructorWithNullLiteral) {
+TEST_F(CudfFunctionsTest, rowConstructorWithNullLiteral) {
   auto integers = makeNullableFlatVector<int32_t>({1, std::nullopt, 3});
   auto input = makeRowVector({"c0"}, {integers});
   auto resultType = ROW({"left", "right"}, {INTEGER(), VARCHAR()});
@@ -130,7 +130,7 @@ TEST_F(GlutenCudfFunctionsTest, rowConstructorWithNullLiteral) {
   }
 }
 
-TEST_F(GlutenCudfFunctionsTest, rejectsAllLiteralRow) {
+TEST_F(CudfFunctionsTest, rejectsAllLiteralRow) {
   auto resultType = ROW({"left", "right"}, {INTEGER(), VARCHAR()});
   auto rowConstructor = std::make_shared<core::CallTypedExpr>(
       resultType,
