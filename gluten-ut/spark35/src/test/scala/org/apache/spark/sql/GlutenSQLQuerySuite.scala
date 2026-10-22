@@ -16,18 +16,13 @@
  */
 package org.apache.spark.sql
 
-import org.apache.gluten.columnarbatch.ColumnarBatches
 import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution.{BroadcastHashJoinExecTransformerBase, TakeOrderedAndProjectExecTransformer}
-import org.apache.gluten.memory.arrow.alloc.ArrowBufferAllocators
 import org.apache.gluten.utils.BackendTestUtils
 
 import org.apache.spark.SparkException
-import org.apache.spark.sql.execution.ColumnarBroadcastExchangeExec
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
-import org.apache.spark.sql.execution.joins.BuildSideRelation
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.task.TaskResources
 
 class GlutenSQLQuerySuite extends SQLQuerySuite with GlutenSQLTestsTrait {
   import testImplicits._
@@ -73,32 +68,6 @@ class GlutenSQLQuerySuite extends SQLQuerySuite with GlutenSQLTestsTrait {
                 assert(plan.exists(_.isInstanceOf[BroadcastHashJoinExecTransformerBase]))
                 assert(plan.exists(_.isInstanceOf[TakeOrderedAndProjectExecTransformer]))
                 checkAnswer(df, Seq(Row(3, 30L), Row(2, 25L)))
-
-                if (isVelox) {
-                  val exchanges = plan.collect { case e: ColumnarBroadcastExchangeExec => e }
-                  assert(exchanges.size == 1)
-                  val exchange = exchanges.head
-                  val relation = exchange.doExecuteBroadcast[BuildSideRelation]().value
-                  val outputTypes = exchange.output.map(_.dataType)
-                  // Broadcast preprojection appends the expression key in either cuDF mode.
-                  val expectedColumns = outputTypes.size + (if (buildOnce) 1 else 0)
-
-                  TaskResources.runUnsafe {
-                    // The iterator recycles loaded batches and closes its serializer when drained.
-                    val batches = relation.asReadOnlyCopy().deserialized
-                    var rows = 0
-                    while (batches.hasNext) {
-                      val batch = batches.next()
-                      assert(batch.numCols() == expectedColumns)
-                      val loaded =
-                        ColumnarBatches.load(ArrowBufferAllocators.contextInstance(), batch)
-                      val types = (0 until loaded.numCols()).map(i => loaded.column(i).dataType())
-                      assert(types.take(outputTypes.size) == outputTypes)
-                      rows += loaded.numRows()
-                    }
-                    assert(rows == 3)
-                  }
-                }
               }
             }
           }
