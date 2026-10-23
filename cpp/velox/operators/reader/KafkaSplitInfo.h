@@ -14,25 +14,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.gluten.vectorized;
 
-import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.task.TaskResources$;
-import org.junit.Test;
+#pragma once
 
-import static org.junit.Assert.assertArrayEquals;
+#include "kafka.pb.h"
+#include "operators/reader/KafkaSplit.h"
+#include "substrait/SubstraitToVeloxPlan.h"
 
-public class ArrowWritableColumnVectorTest {
-  @Test
-  public void getBooleansOnStructBackedVectorReturnsExpectedBooleans() {
-    TaskResources$.MODULE$.runUnsafe(
-        () -> {
-          try (ArrowWritableColumnVector vector =
-              new ArrowWritableColumnVector(1, DataTypes.BooleanType)) {
-            vector.putBoolean(0, false);
-            assertArrayEquals(new boolean[] {false}, vector.getBooleans(0, 1));
-          }
-          return null;
-        });
+namespace gluten {
+
+struct KafkaSplitInfo : SplitInfo {
+  StreamKafka streamKafka;
+
+  std::shared_ptr<KafkaConnectorSplit> toConnectorSplit(const std::string& connectorId) const {
+    return std::make_shared<KafkaConnectorSplit>(
+        connectorId,
+        streamKafka.topic_partition().topic(),
+        streamKafka.topic_partition().partition(),
+        streamKafka.start_offset(),
+        streamKafka.end_offset(),
+        streamKafka.poll_timeout_ms(),
+        streamKafka.fail_on_data_loss(),
+        std::unordered_map<std::string, std::string>(streamKafka.params().begin(), streamKafka.params().end()));
   }
-}
+};
+
+} // namespace gluten
