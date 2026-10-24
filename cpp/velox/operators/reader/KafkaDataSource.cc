@@ -198,10 +198,30 @@ std::vector<std::unique_ptr<RdKafka::Message>> KafkaDataSource::poll(uint64_t ma
   std::vector<std::unique_ptr<RdKafka::Message>> messages;
   const auto pollTimeoutMs = split_->pollTimeoutMs > 0 ? split_->pollTimeoutMs : kDefaultPollTimeoutMs;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(pollTimeoutMs);
+  const auto failOnTimeout = [&]() {
+    VELOX_FAIL(
+        "Timed out after {} ms fetching offset {} of {}-{}",
+        pollTimeoutMs,
+        nextOffset_,
+        split_->topic,
+        split_->partition);
+  };
+  // Offset lookups and seeks share the poll deadline instead of starting a new timeout.
+  const auto remainingTimeoutMs = [&deadline]() {
+    return static_cast<int>(std::clamp<int64_t>(
+        std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count(),
+        0,
+        std::numeric_limits<int>::max()));
+  };
 
   while (!splitDone_ && messages.size() < maxRows) {
+    const auto timeoutMs = remainingTimeoutMs();
+    if (timeoutMs == 0) {
+      break;
+    }
     // Only wait for more records while the batch is empty.
-    std::unique_ptr<RdKafka::Message> msg(consumer_->consume(messages.empty() ? kConsumeTimeoutMs : 0));
+    std::unique_ptr<RdKafka::Message> msg(
+        consumer_->consume(messages.empty() ? std::min(kConsumeTimeoutMs, timeoutMs) : 0));
     switch (msg->err()) {
       case RdKafka::ERR_NO_ERROR: {
         const auto offset = msg->offset();
@@ -224,7 +244,11 @@ std::vector<std::unique_ptr<RdKafka::Message>> KafkaDataSource::poll(uint64_t ma
         if (!splitDone_) {
           // A read_committed EOF can be the last stable offset, or a follower can lag the leader.
           // Query the leader's physical log end before treating the missing tail as data loss.
-          const auto timeoutMs = static_cast<int>(std::min<int64_t>(pollTimeoutMs, std::numeric_limits<int>::max()));
+          const auto timeoutMs = remainingTimeoutMs();
+          if (timeoutMs == 0) {
+            // EOF is only reported once per offset. Do not consume it without resolving the split.
+            failOnTimeout();
+          }
           const auto logEndOffset = getLogEndOffset(*consumer_, split_->topic, split_->partition, timeoutMs);
           if (logEndOffset < split_->endOffset) {
             VELOX_USER_CHECK(
@@ -263,7 +287,11 @@ std::vector<std::unique_ptr<RdKafka::Message>> KafkaDataSource::poll(uint64_t ma
         // available records when Spark permits data loss instead of dropping the entire split.
         int64_t lowOffset;
         int64_t highOffset;
-        const auto timeoutMs = static_cast<int>(std::min<int64_t>(pollTimeoutMs, std::numeric_limits<int>::max()));
+        const auto timeoutMs = remainingTimeoutMs();
+        if (timeoutMs == 0) {
+          // Fetching may remain stopped until seek. Do not return a batch with recovery unfinished.
+          failOnTimeout();
+        }
         auto err =
             consumer_->query_watermark_offsets(split_->topic, split_->partition, &lowOffset, &highOffset, timeoutMs);
         VELOX_CHECK(err == RdKafka::ERR_NO_ERROR, "Failed to get Kafka offset range: {}", RdKafka::err2str(err));
@@ -272,7 +300,11 @@ std::vector<std::unique_ptr<RdKafka::Message>> KafkaDataSource::poll(uint64_t ma
         if (!splitDone_) {
           std::unique_ptr<RdKafka::TopicPartition> partition(
               RdKafka::TopicPartition::create(split_->topic, split_->partition, nextOffset_));
-          err = consumer_->seek(*partition, timeoutMs);
+          const auto seekTimeoutMs = remainingTimeoutMs();
+          if (seekTimeoutMs == 0) {
+            failOnTimeout();
+          }
+          err = consumer_->seek(*partition, seekTimeoutMs);
           VELOX_CHECK(err == RdKafka::ERR_NO_ERROR, "Failed to seek Kafka offset: {}", RdKafka::err2str(err));
         }
         break;
@@ -284,16 +316,11 @@ std::vector<std::unique_ptr<RdKafka::Message>> KafkaDataSource::poll(uint64_t ma
     }
 
     if (!splitDone_ && std::chrono::steady_clock::now() >= deadline) {
-      if (!messages.empty()) {
-        return messages;
-      }
-      VELOX_FAIL(
-          "Timed out after {} ms fetching offset {} of {}-{}",
-          pollTimeoutMs,
-          nextOffset_,
-          split_->topic,
-          split_->partition);
+      break;
     }
+  }
+  if (!splitDone_ && messages.empty()) {
+    failOnTimeout();
   }
   return messages;
 }
