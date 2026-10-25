@@ -16,11 +16,12 @@
  */
 package org.apache.spark.sql.execution.benchmark
 
+import org.apache.gluten.execution.kafka.KafkaTestUtils
+
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.execution.datasources.v2.MicroBatchScanExec
-import org.apache.spark.sql.execution.streaming.StreamingQueryWrapper
 import org.apache.spark.sql.streaming.{StreamingQuery, StreamingQueryListener, Trigger}
 
 import org.apache.kafka.clients.admin.{AdminClient, AdminClientConfig, NewTopic}
@@ -232,9 +233,8 @@ object KafkaIntegrationBenchmark extends SqlBasedBenchmark {
           timer.foreach(_.stopTiming())
         }
 
-        val plan =
-          query.asInstanceOf[StreamingQueryWrapper].streamingQuery.lastExecution.executedPlan
-        // Avoid a Gluten class dependency so engine=spark can run with only Spark's Kafka jars.
+        val plan = KafkaTestUtils.executedPlan(query)
+        // Avoid loading native scan classes when only the Spark baseline is requested.
         val nativeScans = plan.collect {
           case p
               if p.getClass.getName ==

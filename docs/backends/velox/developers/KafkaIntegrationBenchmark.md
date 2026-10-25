@@ -14,18 +14,51 @@ and an existing test broker that permits topic creation and deletion.
 
 Use the [Kafka getting started guide in PR #13413](https://github.com/apache/gluten/pull/13413)
 for native build flags, broker setup, runtime dependencies, and the streaming example.
-The benchmark requires that Kafka integration and a compatible native Velox build with
-`ENABLE_KAFKA=ON` are already available. Use Spark 3.5, Scala 2.12, and JDK 17;
-set `JAVA_HOME` to that JDK. Install the matching JVM modules before running:
+Native comparison (`engine=gluten` or `both`) requires the Velox JVM integration from
+[PR #13237](https://github.com/apache/gluten/pull/13237), as well as a compatible native
+Velox build with `ENABLE_KAFKA=ON`. That JVM integration is not included in this benchmark
+patch. Until it is available, use `engine=spark`; requesting native execution without
+the integration fails the scan-plan check. Use JDK 17 for every profile below and set
+`JAVA_HOME` to that JDK. The repository profiles select these Spark and Scala versions:
+
+| Spark profile | Spark version | Scala profile | Scala version |
+| --- | --- | --- | --- |
+| `3.4` | `3.4.4` | `2.12` | `2.12.18` |
+| `3.5` | `3.5.5` | `2.12` | `2.12.18` |
+| `4.0` | `4.0.2` | `2.13` | `2.13.17` |
+| `4.1` | `4.1.1` | `2.13` | `2.13.17` |
+| `4.2` | `4.2.0` | `2.13` | `2.13.18` |
+
+Run the following commands in Bash from the repository root. Select one Spark profile,
+then clean and install the matching JVM modules. Keep this shell open for the run command:
 
 ```bash
-./build/mvn -B -ntp install \
-  -Pbackends-velox -Pspark-3.5 -Pscala-2.12 \
-  -Pjava-17 -Pkafka -Pspark-ut -Pfast-build -DskipTests
+SPARK_PROFILE=3.5
+case "$SPARK_PROFILE" in
+  3.4|3.5)
+    SCALA_PROFILE=2.12
+    KAFKA_BENCHMARK_MAVEN_JAVA_ARGS=()
+    ;;
+  4.0|4.1|4.2)
+    SCALA_PROFILE=2.13
+    KAFKA_BENCHMARK_MAVEN_JAVA_ARGS=(-Dmaven.compiler.release=17)
+    ;;
+  *)
+    echo "Unsupported Spark profile: $SPARK_PROFILE" >&2
+    exit 1
+    ;;
+esac
+
+./build/mvn -B -ntp clean install \
+  -Pbackends-velox "-Pspark-$SPARK_PROFILE" "-Pscala-$SCALA_PROFILE" \
+  -Pjava-17 -Pkafka -Pspark-ut -Pfast-build \
+  "${KAFKA_BENCHMARK_MAVEN_JAVA_ARGS[@]}" -DskipTests
 ```
 
-After changing Maven profiles, clean the affected JVM module before compiling to remove
-stale component resources. Keep the native library and JVM modules compatible.
+Repeat the clean JVM installation whenever switching Spark or Scala profiles to remove
+stale classes and component resources. A compatible native build can be reused; keep
+the native library and JVM modules compatible. Spark 4.x also requires the explicit
+Java 17 compiler release argument selected above.
 
 ## Scenarios
 
@@ -69,26 +102,32 @@ JVM rather than Maven's classloader. Put every `-Dspark.*` option inside `exec.a
 ```bash
 export KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 export SPARK_LOCAL_IP=127.0.0.1
+KAFKA_BENCHMARK_ENGINE=spark
 set -o pipefail
 
 ./build/mvn -B -ntp test-compile exec:exec -pl backends-velox \
-  -Pbackends-velox -Pspark-3.5 -Pscala-2.12 \
+  -Pbackends-velox "-Pspark-$SPARK_PROFILE" "-Pscala-$SCALA_PROFILE" \
   -Pjava-17 -Pkafka -Pfast-build \
+  "${KAFKA_BENCHMARK_MAVEN_JAVA_ARGS[@]}" \
   -Dexec.executable="$JAVA_HOME/bin/java" -Dexec.classpathScope=test \
   "-Dexec.args=$KAFKA_BENCHMARK_JAVA_OPTS -Xmx4g \
     -Dspark.gluten.benchmark.kafka.scenarios=scan,projection,headers,checkpoint,pipeline \
-    -Dspark.gluten.benchmark.kafka.engine=both \
+    -Dspark.gluten.benchmark.kafka.engine=$KAFKA_BENCHMARK_ENGINE \
     -Dspark.gluten.benchmark.kafka.rows=100000 \
     -Dspark.gluten.benchmark.kafka.payloadBytes=128 \
     -Dspark.gluten.benchmark.kafka.maxOffsetsPerTrigger=10000 \
     -Dspark.gluten.benchmark.kafka.iterations=3 \
     -cp %classpath org.apache.spark.sql.execution.benchmark.KafkaIntegrationBenchmark" \
-  2>&1 | tee /tmp/gluten-kafka-integration-benchmark.log
+  2>&1 | tee "/tmp/gluten-kafka-integration-benchmark-spark-$SPARK_PROFILE.log"
 ```
 
 This is a benchmark main class; invoke it with `exec:exec`, not ScalaTest's `-Dsuites`.
+Set `KAFKA_BENCHMARK_ENGINE=both` to compare Spark and Gluten once the required Velox
+JVM integration is present. Keep the native-plan checks enabled for that comparison.
 For a quick smoke run, use 1,000 rows, 250 offsets per trigger, and one iteration.
 Select individual scenarios with a comma-separated list, such as `scan,checkpoint`.
+To run another Spark version, change `SPARK_PROFILE`, repeat the profile selection and
+clean JVM installation, then run the same benchmark command.
 
 All configuration names below use the prefix `spark.gluten.benchmark.kafka.`:
 
@@ -131,3 +170,9 @@ offsets, checkpoints, and sink coordination. Native Kafka batch reads and contin
 processing are unsupported. Authentication, broker failures, retention loss, and recovery
 under faults need separate correctness tests; this benchmark does not establish those
 guarantees. Kafka producer retries can introduce duplicates, which fail exact validation.
+
+The Velox Kafka CI matrix is configured for all five Spark profiles above. Each job
+runs the shared helper suite and all benchmark scenarios with the Spark baseline.
+The existing native connector and plan-conversion tests remain enabled. Native
+benchmark comparisons and the Velox streaming suites require PR #13237; they are not
+enabled by this benchmark patch. Smoke timings have no CI pass/fail threshold.
