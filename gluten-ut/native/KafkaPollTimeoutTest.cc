@@ -18,15 +18,18 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <librdkafka/rdkafka.h>
 #include <librdkafka/rdkafka_mock.h>
+#include <librdkafka/rdkafkacpp.h>
 
 #include "operators/reader/KafkaConnector.h"
 #include "operators/reader/KafkaDataSource.h"
@@ -116,6 +119,205 @@ TEST_F(KafkaPollTimeoutTest, emptyRangeDoesNotWaitForBroker) {
   EXPECT_EQ(reader->next(1, future).value(), nullptr);
   EXPECT_EQ(reader->getCompletedRows(), 0);
   EXPECT_EQ(reader->getCompletedBytes(), 0);
+}
+
+namespace {
+
+// Supply only the message fields used by poll(), without involving a broker or vector allocation.
+class PollMessage final : public RdKafka::Message {
+ public:
+  PollMessage(RdKafka::ErrorCode error, int64_t offset) : error_(error), offset_(offset) {}
+
+  RdKafka::ErrorCode err() const override {
+    return error_;
+  }
+
+  std::string errstr() const override {
+    return RdKafka::err2str(error_);
+  }
+
+  int64_t offset() const override {
+    return offset_;
+  }
+
+  size_t len() const override {
+    return 3;
+  }
+
+  size_t key_len() const override {
+    return 2;
+  }
+
+  RdKafka::Topic* topic() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  std::string topic_name() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  int32_t partition() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  void* payload() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  const std::string* key() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  const void* key_pointer() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::MessageTimestamp timestamp() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  void* msg_opaque() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  int64_t latency() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  rd_kafka_message_t* c_ptr() override {
+    VELOX_UNREACHABLE();
+  }
+
+  Status status() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::Headers* headers() override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::Headers* headers(RdKafka::ErrorCode* /*error*/) override {
+    VELOX_UNREACHABLE();
+  }
+
+  int32_t broker_id() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  int32_t leader_epoch() const override {
+    VELOX_UNREACHABLE();
+  }
+
+  RdKafka::Error* offset_store() override {
+    VELOX_UNREACHABLE();
+  }
+
+ private:
+  const RdKafka::ErrorCode error_;
+  const int64_t offset_;
+};
+
+class ScriptedKafkaDataSource final : public KafkaDataSource {
+ public:
+  using KafkaDataSource::KafkaDataSource;
+
+  struct Event {
+    RdKafka::ErrorCode error;
+    int64_t offset;
+    std::chrono::steady_clock::duration elapsed;
+  };
+
+  std::deque<Event> events;
+  std::vector<int> consumeTimeouts;
+
+ private:
+  std::chrono::steady_clock::time_point pollTime() const override {
+    return now_;
+  }
+
+  RdKafka::Message* consume(int timeoutMs) override {
+    consumeTimeouts.push_back(timeoutMs);
+    VELOX_CHECK(!events.empty(), "Unexpected consume call");
+    const auto event = events.front();
+    events.pop_front();
+    now_ += event.elapsed;
+    return new PollMessage(event.error, event.offset);
+  }
+
+  std::chrono::steady_clock::time_point now_{};
+};
+
+} // namespace
+
+// Exercise the production poll loop with a controlled clock and recorded I/O arguments.
+// These tests neither sleep nor use wall-clock tolerances.
+class KafkaPollTimeoutArgumentTest : public ::testing::Test, public test::VectorTestBase {
+ protected:
+  static void SetUpTestCase() {
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
+  }
+
+  std::unique_ptr<ScriptedKafkaDataSource> source(int64_t timeoutMs, int64_t endOffset = 3) {
+    auto type = ROW({"offset"}, {BIGINT()});
+    connector::ColumnHandleMap columns{{"offset", std::make_shared<KafkaColumnHandle>("offset", BIGINT())}};
+    auto reader = std::make_unique<ScriptedKafkaDataSource>(type, columns, pool());
+    reader->split_ = std::make_shared<KafkaConnectorSplit>(
+        kConnectorId, kTopic, 0, 0, endOffset, timeoutMs, false, std::unordered_map<std::string, std::string>{});
+    return reader;
+  }
+
+  std::vector<std::unique_ptr<RdKafka::Message>> poll(KafkaDataSource& reader, uint64_t maxRows = 1) {
+    return reader.poll(maxRows);
+  }
+
+  bool splitDone(const KafkaDataSource& reader) {
+    return reader.splitDone_;
+  }
+
+  int64_t nextOffset(const KafkaDataSource& reader) {
+    return reader.nextOffset_;
+  }
+};
+
+TEST_F(KafkaPollTimeoutArgumentTest, consumeUsesExactShortTimeout) {
+  auto reader = source(10);
+  reader->events = {{RdKafka::ERR__TIMED_OUT, -1, std::chrono::milliseconds(10)}};
+  VELOX_ASSERT_THROW(poll(*reader), "Timed out after 10 ms fetching offset");
+  EXPECT_EQ(reader->consumeTimeouts, std::vector<int>({10}));
+}
+
+TEST_F(KafkaPollTimeoutArgumentTest, successiveConsumesShareDeadline) {
+  auto reader = source(250);
+  reader->events = {
+      {RdKafka::ERR__TIMED_OUT, -1, std::chrono::milliseconds(100)},
+      {RdKafka::ERR__TIMED_OUT, -1, std::chrono::milliseconds(100)},
+      {RdKafka::ERR__TIMED_OUT, -1, std::chrono::milliseconds(50)}};
+  VELOX_ASSERT_THROW(poll(*reader), "Timed out after 250 ms fetching offset");
+  EXPECT_EQ(reader->consumeTimeouts, std::vector<int>({100, 100, 50}));
+}
+
+TEST_F(KafkaPollTimeoutArgumentTest, collectedRecordsUseNonBlockingConsume) {
+  auto reader = source(300);
+  reader->events = {
+      {RdKafka::ERR_NO_ERROR, 0, std::chrono::milliseconds(25)},
+      {RdKafka::ERR__TIMED_OUT, -1, std::chrono::milliseconds(0)}};
+  const auto messages = poll(*reader, 2);
+  ASSERT_EQ(messages.size(), 1);
+  EXPECT_EQ(messages.front()->offset(), 0);
+  EXPECT_EQ(reader->consumeTimeouts, std::vector<int>({100, 0}));
+  EXPECT_EQ(reader->getCompletedBytes(), 5);
+}
+
+TEST_F(KafkaPollTimeoutArgumentTest, expiredBudgetReturnsCollectedRecord) {
+  auto reader = source(300);
+  reader->events = {{RdKafka::ERR_NO_ERROR, 0, std::chrono::milliseconds(301)}};
+  const auto messages = poll(*reader, 2);
+  ASSERT_EQ(messages.size(), 1);
+  EXPECT_EQ(messages.front()->offset(), 0);
+  EXPECT_EQ(reader->consumeTimeouts, std::vector<int>({100}));
+  EXPECT_EQ(reader->getCompletedBytes(), 5);
+  EXPECT_EQ(nextOffset(*reader), 1);
+  EXPECT_FALSE(splitDone(*reader));
 }
 
 } // namespace gluten
