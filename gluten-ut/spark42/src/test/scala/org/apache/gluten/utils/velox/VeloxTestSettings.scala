@@ -1471,6 +1471,8 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenTransformWithStateClusterSuite]
   enableSuite[GlutenTransformWithStateInitialStateSuite]
   enableSuite[GlutenTransformWithStateUnsafeRowSuite]
+    // GLUTEN-13463: Replaced by a testGluten case that avoids the manual-clock race on restart.
+    .excludeByPrefix("test that introducing TTL after restart fails query")
   enableSuite[GlutenTransformWithStateValidationSuite]
   enableSuite[GlutenTransformWithValueStateTTLSuite]
   enableSuite[GlutenTriggerAvailableNowSuite]

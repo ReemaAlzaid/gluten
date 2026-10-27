@@ -1,0 +1,191 @@
+<div id="cart-restart-example">
+  <h3>One cart, two test orders</h3>
+  <div class="viz-controls" aria-label="Test order">
+    <button type="button" class="btn" data-order="old" aria-pressed="true">Original test</button>
+    <button type="button" class="btn" data-order="fixed" aria-pressed="false">Corrected test</button>
+  </div>
+  <div class="step-heading">
+    <span id="cart-step-title">1. Alice adds one item</span>
+    <span id="cart-step-count" class="text-small tabular-nums">1 of 6</span>
+  </div>
+  <div id="cart-scene"></div>
+  <div id="cart-detail" aria-live="polite">The saved checkpoint contains a count, without an expiration field.</div>
+  <div class="viz-controls step-controls">
+    <button type="button" class="btn" id="cart-back" disabled>Previous</button>
+    <button type="button" class="btn btn-primary" id="cart-next">Next step</button>
+  </div>
+</div>
+<style>
+  #cart-restart-example { color: var(--foreground); }
+  #cart-restart-example h3 { margin: 0 96px 16px 0; }
+  #cart-restart-example .step-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-top: 24px; }
+  #cart-restart-example #cart-step-title { font-weight: 500; }
+  #cart-restart-example #cart-step-count { flex: 0 0 auto; color: var(--muted-foreground); }
+  #cart-restart-example #cart-scene { width: 100%; margin-top: 12px; }
+  #cart-restart-example .cart-diagram { display: block; width: 100%; overflow: visible; }
+  #cart-restart-example .cart-diagram text { fill: var(--foreground); font-family: inherit; font-size: var(--font-size-base); font-weight: 400; }
+  #cart-restart-example .cart-diagram .node-title { font-weight: 500; }
+  #cart-restart-example .cart-diagram .node-outline { fill: transparent; stroke: var(--border); stroke-width: 1; }
+  #cart-restart-example .cart-diagram .active-node { fill: color-mix(in srgb, var(--viz-series-1) 10%, transparent); stroke: var(--border); stroke-width: 1; }
+  #cart-restart-example .cart-diagram .connector { fill: none; stroke: var(--muted-foreground); stroke-width: 1; }
+  #cart-restart-example #cart-detail { margin-top: 12px; }
+  #cart-restart-example .step-controls { margin-top: 20px; }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('cart-restart-example');
+  const scene = root.querySelector('#cart-scene');
+  const title = root.querySelector('#cart-step-title');
+  const counter = root.querySelector('#cart-step-count');
+  const detail = root.querySelector('#cart-detail');
+  const back = root.querySelector('#cart-back');
+  const next = root.querySelector('#cart-next');
+  const buttons = [...root.querySelectorAll('[data-order]')];
+  const savedCount = ['Alice: 1 item', 'Format: count only'];
+  const rejected = ['REJECTED; job stopped', 'Saved format incompatible'];
+  const common = [
+    {title: '1. Alice adds one item', active: 'job', input: ['Alice adds 1 item', 'Event processed'], job: ['RUNNING', 'Expiration: off'], saved: savedCount, test: ['Check the count', 'Count = 1: correct'], detail: 'The saved checkpoint contains a count, without an expiration field.'},
+    {title: '2. Stop the job', active: 'saved', input: ['Next item event', 'Not queued yet'], job: ['STOPPED', 'Expiration: off'], saved: savedCount, test: ['StopStream', 'The saved count remains'], detail: 'Stopping the job keeps its checkpoint on disk.'},
+    {title: '3. Enable expiration for restart', active: 'job', input: ['Next item event', 'Not queued yet'], job: ['STOPPED', 'New format: count + expiry'], saved: savedCount, test: ['Build the TTL version', 'No restart yet'], detail: 'In this scenario, the new format is incompatible with the saved format.'}
+  ];
+  const stages = {
+    old: [...common,
+      {title: '4. Restart reads the old format', active: 'job', input: ['Next item event', 'Not queued yet'], job: rejected, saved: savedCount, test: ['StartStream', 'Expected error recorded'], detail: 'Spark rejects the restart before the next test instruction runs.'},
+      {title: '5. AddData waits for the job', active: 'test', input: ['Next item event', 'Queuing blocked by failure'], job: rejected, saved: savedCount, test: ['AddData', 'FAIL: job already stopped'], detail: 'The waiting step fails before the test checks the expected error.'},
+      {title: '6. The error check is never reached', active: 'test', input: ['Next item event', 'Not queued'], job: rejected, saved: savedCount, test: ['ExpectFailure: not reached', 'TEST FAILED'], detail: 'Spark rejected the restart correctly; the test failed at the waiting step.'}
+    ],
+    fixed: [...common,
+      {title: '4. Queue the next item first', active: 'input', input: ['Alice adds 1 item', 'QUEUED before startup'], job: ['STOPPED', 'New format: count + expiry'], saved: savedCount, test: ['AddData', 'Input ready'], detail: 'Queuing input before startup avoids waiting on a running job.'},
+      {title: '5. Restart reads the old format', active: 'job', input: ['Alice adds 1 item', 'Queued; no new count saved'], job: rejected, saved: savedCount, test: ['StartStream', 'Expected error recorded'], detail: 'Spark rejects the same incompatible saved format.'},
+      {title: '6. Check the expected error', active: 'test', input: ['Alice adds 1 item', 'No new count saved'], job: rejected, saved: savedCount, test: ['ExpectFailure', 'Exact error matches: TEST PASSED'], detail: 'The corrected test checks the expected error directly after startup.'}
+    ]
+  };
+  let order = 'old';
+  let step = 0;
+  const canvas = document.createElement('canvas');
+  const measure = canvas.getContext('2d');
+  const ns = 'http://www.w3.org/2000/svg';
+  function element(tag, attrs, text) {
+    const node = document.createElementNS(ns, tag);
+    Object.entries(attrs || {}).forEach(([key, value]) => node.setAttribute(key, String(value)));
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function wrap(text, width) {
+    const words = text.split(' ');
+    const lines = [];
+    let line = '';
+    words.forEach(word => {
+      const candidate = line ? line + ' ' + word : word;
+      if (line && measure.measureText(candidate).width > width) {
+        lines.push(line);
+        line = word;
+      } else line = candidate;
+    });
+    if (line) lines.push(line);
+    return lines;
+  }
+  function draw() {
+    const state = stages[order][step];
+    const width = scene.getBoundingClientRect().width;
+    if (!width) return;
+    const style = getComputedStyle(root);
+    const font = parseFloat(style.fontSize) || 14;
+    measure.font = font + 'px ' + style.fontFamily;
+    const gap = font * 1.6;
+    const pad = 16;
+    const stacked = width < 600;
+    const space = 28;
+    const nodeWidth = stacked ? width - 2 : (width - 2 - space * 2) / 3;
+    const specs = [
+      ['input', 'Incoming item', state.input],
+      ['job', 'Shop’s Spark job', state.job],
+      ['saved', 'Saved checkpoint', state.saved]
+    ];
+    const bodyLines = specs.map(spec => spec[2].flatMap(line => wrap(line, nodeWidth - pad * 2)));
+    const nodeHeight = 50 + Math.max(...bodyLines.map(lines => lines.length)) * gap;
+    const bodyHeight = stacked ? nodeHeight * 3 + space * 2 : nodeHeight;
+    const testLines = state.test.flatMap(line => wrap(line, width - pad * 2 - 2));
+    const testY = bodyHeight + 38;
+    const testHeight = 50 + testLines.length * gap;
+    const height = testY + testHeight + 1;
+    const svg = element('svg', {class: 'cart-diagram', viewBox: '0 0 ' + width + ' ' + height, height, role: 'img', 'aria-labelledby': 'cart-svg-title cart-svg-desc'});
+    svg.append(element('title', {id: 'cart-svg-title'}, state.title));
+    svg.append(element('desc', {id: 'cart-svg-desc'}, specs.map(spec => spec[1] + ': ' + spec[2].join('. ')).join('. ') + '. Automated test: ' + state.test.join('. ') + '. ' + state.detail));
+    function node(id, label, lines, x, y, w, h) {
+      svg.append(element('rect', {x, y, width: w, height: h, rx: 6, class: id === state.active ? 'active-node' : 'node-outline'}));
+      svg.append(element('text', {x: x + pad, y: y + 25, class: 'node-title'}, label));
+      lines.forEach((line, i) => svg.append(element('text', {x: x + pad, y: y + 50 + i * gap}, line)));
+    }
+    function arrow(x1, y1, x2, y2) {
+      svg.append(element('path', {d: 'M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2, class: 'connector'}));
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+      const size = 5;
+      const xa = x2 - size * Math.cos(angle - 0.6);
+      const ya = y2 - size * Math.sin(angle - 0.6);
+      const xb = x2 - size * Math.cos(angle + 0.6);
+      const yb = y2 - size * Math.sin(angle + 0.6);
+      svg.append(element('path', {d: 'M ' + xa + ' ' + ya + ' L ' + x2 + ' ' + y2 + ' L ' + xb + ' ' + yb, class: 'connector'}));
+    }
+    specs.forEach((spec, i) => {
+      const x = stacked ? 1 : 1 + i * (nodeWidth + space);
+      const y = stacked ? i * (nodeHeight + space) : 0;
+      node(spec[0], spec[1], bodyLines[i], x, y, nodeWidth, nodeHeight);
+      if (i < 2) {
+        const readSavedState = i === 1 && step >= 3 && !(order === 'fixed' && step === 3);
+        if (stacked) {
+          const first = y + nodeHeight + 5;
+          const last = y + nodeHeight + space - 5;
+          arrow(width / 2, readSavedState ? last : first, width / 2, readSavedState ? first : last);
+        } else {
+          const first = x + nodeWidth + 5;
+          const last = x + nodeWidth + space - 5;
+          arrow(readSavedState ? last : first, nodeHeight / 2, readSavedState ? first : last, nodeHeight / 2);
+        }
+      }
+    });
+    node('test', 'Automated test watching the job', testLines, 1, testY, width - 2, testHeight);
+    scene.replaceChildren(svg);
+  }
+  function render() {
+    const state = stages[order][step];
+    title.textContent = state.title;
+    counter.textContent = (step + 1) + ' of 6';
+    detail.textContent = state.detail;
+    buttons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.order === order)));
+    back.disabled = step === 0;
+    next.disabled = step === 5;
+    root.dataset.order = order;
+    root.dataset.step = String(step);
+    draw();
+  }
+  function save() {
+    if (window.openai && window.openai.setWidgetState) {
+      window.openai.setWidgetState({modelContent: {example: 'cart restart', testOrder: order, step: step + 1}, privateContent: {order, step}}).catch(() => {});
+    }
+  }
+  function restore(value) {
+    const stored = value && value.privateContent;
+    if (stored && (stored.order === 'old' || stored.order === 'fixed') && Number.isInteger(stored.step) && stored.step >= 0 && stored.step <= 5) {
+      order = stored.order;
+      step = stored.step;
+    }
+  }
+  buttons.forEach(button => button.addEventListener('click', () => {
+    order = button.dataset.order;
+    render();
+    save();
+  }));
+  back.addEventListener('click', () => { if (step > 0) { step--; render(); save(); } });
+  next.addEventListener('click', () => { if (step < 5) { step++; render(); save(); } });
+  window.addEventListener('openai:set_globals', event => {
+    if (event.detail && event.detail.globals && event.detail.globals.widgetState) {
+      restore(event.detail.globals.widgetState);
+      render();
+    }
+  });
+  restore(window.openai && window.openai.widgetState);
+  render();
+  new ResizeObserver(draw).observe(scene);
+})();
+</script>
