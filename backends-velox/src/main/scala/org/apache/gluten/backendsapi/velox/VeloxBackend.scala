@@ -102,6 +102,17 @@ object VeloxBackendSettings extends BackendSettingsApi {
   // unit: SECONDS, default 1 day
   val GLUTEN_VELOX_BROADCAST_CACHE_EXPIRED_TIME_DEFAULT: Int = 86400
 
+  // Columns produced by the native Kafka reader. Kafka headers are not supported.
+  private val kafkaColumns = Map(
+    "key" -> BinaryType,
+    "value" -> BinaryType,
+    "topic" -> StringType,
+    "partition" -> IntegerType,
+    "offset" -> LongType,
+    "timestamp" -> TimestampType,
+    "timestamptype" -> IntegerType
+  )
+
   override def primaryBatchType: Convention.BatchType = VeloxBatchType
 
   override def supportTimestampNtz: Boolean = true
@@ -191,16 +202,6 @@ object VeloxBackendSettings extends BackendSettingsApi {
               .orElse(validateTypes(schemaTypeValidator, dataSchema.fields))
           }
         case KafkaReadFormat =>
-          // Columns produced by the native Kafka reader. Kafka headers are not supported.
-          val kafkaColumns = Map(
-            "key" -> BinaryType,
-            "value" -> BinaryType,
-            "topic" -> StringType,
-            "partition" -> IntegerType,
-            "offset" -> LongType,
-            "timestamp" -> TimestampType,
-            "timestamptype" -> IntegerType
-          )
           fields
             .find(f => !kafkaColumns.get(f.name.toLowerCase(Locale.ROOT)).contains(f.dataType))
             .map(f => s"Unsupported Kafka column ${f.name}: ${f.dataType.simpleString}.")
