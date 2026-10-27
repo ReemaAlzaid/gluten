@@ -87,9 +87,9 @@ class DecimalPmodValidateSuite extends WholeStageTransformerSuite {
         "-5.5" -> "-3.00",
         "0.0" -> "3.00",
         "6.0" -> "3.00",
-        null -> "3.00",
+        (null, "3.00"),
         "5.5" -> null,
-        null -> null)
+        (null, null))
     ) {
       for (ansi <- Seq("false", "true"); precisionLoss <- Seq("false", "true")) {
         withSQLConf(
@@ -139,7 +139,7 @@ class DecimalPmodValidateSuite extends WholeStageTransformerSuite {
     withDecimalTable(
       DecimalType(12, 2),
       DecimalType(12, 2),
-      Seq(null -> "0.00", "1.00" -> null, null -> null)) {
+      Seq((null, "0.00"), "1.00" -> null, (null, null))) {
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
         checkNative(DecimalType(12, 2))
       }
@@ -172,19 +172,18 @@ class DecimalPmodValidateSuite extends WholeStageTransformerSuite {
     ) {
       withDecimalTable(leftType, rightType, values) {
         for (capturedAnsi <- Seq("false", "true")) {
-          val df = withSQLConf(SQLConf.ANSI_ENABLED.key -> capturedAnsi) {
-            val result = sql("SELECT pmod(a, n) FROM decimal_pmod")
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> capturedAnsi) {
+            val df = sql("SELECT pmod(a, n) FROM decimal_pmod")
             // Force physical planning before changing the setting used to create the native
             // runtime. Neither the checked operation nor its TRY wrapper may read that setting.
-            checkGlutenPlan[ProjectExecTransformer](result)
-            result
-          }
-          withSQLConf(SQLConf.ANSI_ENABLED.key -> (capturedAnsi == "false").toString) {
-            if (capturedAnsi == "false") {
-              checkAnswer(df, Row(null))
-            } else {
-              val error = intercept[SparkException](df.collect())
-              assert(error.getMessage.contains(message), error.getMessage)
+            checkGlutenPlan[ProjectExecTransformer](df)
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> (capturedAnsi == "false").toString) {
+              if (capturedAnsi == "false") {
+                checkAnswer(df, Row(null))
+              } else {
+                val error = intercept[SparkException](df.collect())
+                assert(error.getMessage.contains(message), error.getMessage)
+              }
             }
           }
         }
