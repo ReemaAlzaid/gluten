@@ -1182,25 +1182,6 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
     }
   }
 
-  override def genStringToMapTransformer(
-      substraitExprName: String,
-      children: Seq[ExpressionTransformer],
-      expr: Expression): ExpressionTransformer = {
-    // Calling `.toString` on both sides ensures compatibility across all Spark versions.
-    // Starting from Spark 4.1, `SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY)` returns
-    // an enum instead of a String.
-    if (
-      SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString
-        != SQLConf.MapKeyDedupPolicy.EXCEPTION.toString
-    ) {
-      GlutenExceptionUtil.throwsNotFullySupported(
-        ExpressionNames.STR_TO_MAP,
-        StrToMapRestrictions.ONLY_SUPPORT_MAP_KEY_DEDUP_POLICY
-      )
-    }
-    GenericExpressionTransformer(substraitExprName, children, expr)
-  }
-
   override def genFormatNumberTransformer(
       substraitExprName: String,
       children: Seq[ExpressionTransformer],
@@ -1422,6 +1403,29 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
       // For test purpose.
       Sig[VeloxDummyExpression](VeloxDummyExpression.VELOX_DUMMY_EXPRESSION)
     )
+  }
+
+  override def extraExpressionConverter(
+      substraitExprName: String,
+      expr: Expression,
+      attributeSeq: Seq[Attribute]): Option[ExpressionTransformer] = {
+    expr match {
+      case rc: RoundCeil if rc.child.dataType.isInstanceOf[DecimalType] =>
+        Some(
+          DecimalCeilFloorTransformer(
+            substraitExprName,
+            ExpressionConverter.replaceWithExpressionTransformer(rc.child, attributeSeq),
+            rc,
+            rc.scale))
+      case rf: RoundFloor if rf.child.dataType.isInstanceOf[DecimalType] =>
+        Some(
+          DecimalCeilFloorTransformer(
+            substraitExprName,
+            ExpressionConverter.replaceWithExpressionTransformer(rf.child, attributeSeq),
+            rf,
+            rf.scale))
+      case _ => None
+    }
   }
 
   override def rewriteSpillPath(path: String): String = {
