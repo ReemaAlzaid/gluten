@@ -143,8 +143,8 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
   }
 
   /**
-   * Map arithmetic expr to different functions: substraitExprName or try(checkArithmeticExprName)
-   * based on EvalMode.
+   * Map arithmetic expr to different functions based on EvalMode: substraitExprName by default,
+   * checkArithmeticExprName in ANSI mode, and Velox's try_ function in TRY mode.
    */
   override def genArithmeticTransformer(
       substraitExprName: String,
@@ -158,11 +158,23 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
         case _ =>
           throw new GlutenNotSupportException(s"$substraitExprName with try mode is not supported")
       }
-      // Offload to velox for only IntegralTypes.
-      GenericExpressionTransformer(
-        ExpressionMappings.expressionsMap(classOf[TryEval]),
-        Seq(GenericExpressionTransformer(checkArithmeticExprName, Seq(left, right), original)),
-        original)
+      // Offload to velox for only IntegralTypes. The try_ functions return NULL only when the
+      // operation overflows, so an error in an argument still throws, as in Spark.
+      original match {
+        case _: Add =>
+          GenericExpressionTransformer(ExpressionNames.TRY_ADD, Seq(left, right), original)
+        case _: Subtract =>
+          GenericExpressionTransformer(ExpressionNames.TRY_SUBTRACT, Seq(left, right), original)
+        case _: Multiply =>
+          GenericExpressionTransformer(ExpressionNames.TRY_MULTIPLY, Seq(left, right), original)
+        case _ =>
+          // TODO: Remove try(checkArithmeticExprName) and genTryArithmeticTransformer once Velox
+          // supports all relevant try_* functions.
+          GenericExpressionTransformer(
+            ExpressionMappings.expressionsMap(classOf[TryEval]),
+            Seq(GenericExpressionTransformer(checkArithmeticExprName, Seq(left, right), original)),
+            original)
+      }
     } else if (ExpressionUtils.withAnsiEvalMode(original)) {
       GenericExpressionTransformer(checkArithmeticExprName, Seq(left, right), original)
     } else {
@@ -190,6 +202,47 @@ class VeloxSparkPlanExecApi extends SparkPlanExecApi with Logging {
     }
     if (!allowPrecisionLoss) { name + "_deny_precision_loss" }
     else { name }
+  }
+
+  override def genDecimalArithmeticTransformer(
+      substraitExprName: String,
+      left: ExpressionTransformer,
+      right: ExpressionTransformer,
+      original: BinaryArithmetic): ExpressionTransformer = {
+    original match {
+      case p: Pmod =>
+        if (p.evalMode != EvalMode.ANSI && p.evalMode != EvalMode.LEGACY) {
+          throw new GlutenNotSupportException(
+            s"Decimal pmod with evaluation mode ${p.evalMode} is not supported.")
+        }
+        // Velox reads the session's ANSI setting, so a different captured mode must run in Spark.
+        if ((p.evalMode == EvalMode.ANSI) != SQLConf.get.ansiEnabled) {
+          throw new GlutenNotSupportException(
+            "Decimal pmod's captured ANSI mode differs from the session.")
+        }
+        // Spark evaluates the divisor first and can skip the dividend for a null/zero divisor.
+        // An eager native function is equivalent only when neither child can raise an error.
+        // Restrict this initial implementation to values whose evaluation cannot throw.
+        if (
+          !p.children.forall {
+            case _: AttributeReference | _: BoundReference | _: Literal => true
+            case _ => false
+          }
+        ) {
+          throw new GlutenNotSupportException(
+            "Decimal pmod with computed operands is not supported.")
+        }
+        // Use Spark's resolved decimal type, including the precision check needed after
+        // adjusting a negative remainder. Velox handles both ANSI and legacy errors itself.
+        DecimalArithmeticExpressionTransformer(
+          substraitExprName,
+          left,
+          right,
+          p.dataType.asInstanceOf[DecimalType],
+          p)
+      case _ =>
+        super.genDecimalArithmeticTransformer(substraitExprName, left, right, original)
+    }
   }
 
   /** Transform map_entries to Substrait. */
